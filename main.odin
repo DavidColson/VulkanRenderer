@@ -12,7 +12,10 @@ HEIGHT :: 600
 
 FrameData :: struct {
 	commandPool: vk.CommandPool,
-	mainCommandBuffer: vk.CommandBuffer
+	mainCommandBuffer: vk.CommandBuffer,
+	renderFence: vk.Fence,
+	swapchainSemaphore: vk.Semaphore,
+	renderSemaphore: vk.Semaphore
 }
 
 FRAMES_OVERLAP :: 2
@@ -41,8 +44,8 @@ Error :: union #shared_nil {
 	vkb.Error,
 }
 
-get_current_frame :: proc(s: ^State) -> FrameData {
-	return s.frames[s.frameNumber]
+get_current_frame :: proc(s: ^State) -> ^FrameData {
+	return &s.frames[s.frameNumber]
 }
 
 init_vulkan :: proc(s: ^State) -> (err: Error) {
@@ -140,7 +143,23 @@ init_commands :: proc(s: ^State) -> (err: Error) {
 	return
 }
 
-init_sync_structures :: proc(s: ^State) {
+init_sync_structures :: proc(s: ^State) -> (err: Error) {
+	fenceCreateInfo := vk.FenceCreateInfo { sType = .FENCE_CREATE_INFO, flags = {.SIGNALED} }
+	semaphoreCreateInfo := vk.SemaphoreCreateInfo { sType = .SEMAPHORE_CREATE_INFO }
+
+	for i := 0; i < FRAMES_OVERLAP; i+=1 {
+		if res := vk.CreateFence(s.device.ptr, &fenceCreateInfo, nil, &s.frames[i].renderFence); res != .SUCCESS {
+			return .Vulkan_Error
+		}
+
+		if res := vk.CreateSemaphore(s.device.ptr, &semaphoreCreateInfo, nil, &s.frames[i].swapchainSemaphore); res != .SUCCESS {
+			return .Vulkan_Error
+		}
+		if res := vk.CreateSemaphore(s.device.ptr, &semaphoreCreateInfo, nil, &s.frames[i].renderSemaphore); res != .SUCCESS {
+			return .Vulkan_Error
+		}
+	}
+	return
 }
 
 init :: proc(s: ^State) {
@@ -158,6 +177,44 @@ init :: proc(s: ^State) {
 	init_sync_structures(s);
 }
 
+transition_image :: proc(cmd: vk.CommandBuffer, image: vk.Image, currentLayout: vk.ImageLayout, newLayout: vk.ImageLayout) {
+	imageBarrier := vk.ImageMemoryBarrier2 { sType = .IMAGE_MEMORY_BARRIER }
+	// imageBarrier.pNext = 
+ 
+	imageBarrier.srcStageMask = {.ALL_COMMANDS }
+	imageBarrier.srcAccessMask = { .MEMORY_WRITE }
+	imageBarrier.dstStageMask = { .ALL_COMMANDS }
+	imageBarrier.dstAccessMask = { .MEMORY_WRITE, .MEMORY_READ }
+}
+
+draw :: proc(s: ^State) -> (err: Error) {
+	vk.WaitForFences(s.device.ptr, 1, &get_current_frame(s).renderFence, true, 1000000000)
+	vk.ResetFences(s.device.ptr, 1, &get_current_frame(s).renderFence)
+
+	swapchainImageIndex: u32 = 0
+	if res := vk.AcquireNextImageKHR(
+		s.device.ptr, s.swapchain.ptr, 1000000000, get_current_frame(s).swapchainSemaphore,  
+		0, &swapchainImageIndex); res != .SUCCESS {
+		return .Vulkan_Error
+	}
+
+	beginInfo := vk.CommandBufferBeginInfo {
+		sType = .COMMAND_BUFFER_BEGIN_INFO,
+		flags = {.ONE_TIME_SUBMIT}
+	}
+
+	cmd := get_current_frame(s).mainCommandBuffer 
+
+	vk.ResetCommandBuffer(cmd, {})
+
+	if res := vk.BeginCommandBuffer(cmd, &beginInfo); res != .SUCCESS {
+		return .Vulkan_Error
+	}
+
+	// Dave todo: Next to do is image transition commands to run our renderpassless clear command
+	return
+}
+
 main :: proc() {
 	fmt.println("Hello World!")
 
@@ -168,5 +225,6 @@ main :: proc() {
 	for !glfw.WindowShouldClose(state.window)
 	{
 		glfw.PollEvents()
+
 	}
 }
