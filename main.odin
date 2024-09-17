@@ -6,6 +6,7 @@ import "vendor:glfw"
 import "core:os"
 import vk "vendor:vulkan"
 import "base:runtime"
+import "core:math"
 
 WIDTH :: 800
 HEIGHT :: 600
@@ -29,6 +30,8 @@ State :: struct {
 	swapchain: ^vkb.Swapchain,
 	graphicsQueue: vk.Queue,
 	graphicsQueueFamily: u32,
+	swapchainImages: []vk.Image,
+	swapchainImageViews: []vk.ImageView,
 
 	frames: [FRAMES_OVERLAP]FrameData,
 	frameNumber: u32
@@ -115,6 +118,9 @@ init_swapchain :: proc(s: ^State, width, height: u32) -> (err: Error) {
 	swapchain := vkb.build_swapchain(&builder) or_return
 	vkb.destroy_swapchain(s.swapchain)
 	s.swapchain = swapchain
+	
+	s.swapchainImages = vkb.swapchain_get_images(s.swapchain) or_return
+	s.swapchainImageViews = vkb.swapchain_get_image_views(s.swapchain) or_return
 	return
 }
 
@@ -177,14 +183,41 @@ init :: proc(s: ^State) {
 	init_sync_structures(s);
 }
 
+image_subresource_range :: proc(aspectMask: vk.ImageAspectFlags) -> vk.ImageSubresourceRange {
+	subImage: vk.ImageSubresourceRange
+	subImage.aspectMask = aspectMask
+	subImage.baseMipLevel = 0
+	subImage.levelCount = vk.REMAINING_MIP_LEVELS
+	subImage.baseArrayLayer = 0
+	subImage.layerCount = vk.REMAINING_ARRAY_LAYERS	
+
+	return subImage
+}
+
 transition_image :: proc(cmd: vk.CommandBuffer, image: vk.Image, currentLayout: vk.ImageLayout, newLayout: vk.ImageLayout) {
 	imageBarrier := vk.ImageMemoryBarrier2 { sType = .IMAGE_MEMORY_BARRIER }
-	// imageBarrier.pNext = 
+	imageBarrier.pNext = nil
  
 	imageBarrier.srcStageMask = {.ALL_COMMANDS }
 	imageBarrier.srcAccessMask = { .MEMORY_WRITE }
 	imageBarrier.dstStageMask = { .ALL_COMMANDS }
 	imageBarrier.dstAccessMask = { .MEMORY_WRITE, .MEMORY_READ }
+
+	imageBarrier.oldLayout = currentLayout
+	imageBarrier.newLayout = newLayout
+
+	aspectMask: vk.ImageAspectFlags = newLayout == .DEPTH_ATTACHMENT_OPTIMAL ? {.DEPTH} : {.COLOR}
+	imageBarrier.subresourceRange =	image_subresource_range(aspectMask) 
+	imageBarrier.image = image
+
+	depInfo: vk.DependencyInfo
+	depInfo.sType = .DEPENDENCY_INFO
+	depInfo.pNext = nil
+
+	depInfo.imageMemoryBarrierCount = 1
+	depInfo.pImageMemoryBarriers = &imageBarrier
+
+	vk.CmdPipelineBarrier2(cmd, &depInfo)
 }
 
 draw :: proc(s: ^State) -> (err: Error) {
@@ -211,7 +244,23 @@ draw :: proc(s: ^State) -> (err: Error) {
 		return .Vulkan_Error
 	}
 
-	// Dave todo: Next to do is image transition commands to run our renderpassless clear command
+	transition_image(cmd, s.swapchainImages[swapchainImageIndex], .UNDEFINED, .GENERAL)
+
+	clearValue: vk.ClearColorValue
+	flash:f32 =  abs(math.sin(cast(f32)s.frameNumber / 120.0))
+	clearValue = { float32 = { 0.0, 0.0, flash, 1.0 } }
+	
+	clearRange: vk.ImageSubresourceRange = image_subresource_range({.COLOR})
+
+	vk.CmdClearColorImage(cmd, s.swapchainImages[swapchainImageIndex], .GENERAL, &clearValue, 1, &clearRange)
+
+	transition_image(cmd, s.swapchainImages[swapchainImageIndex], .GENERAL, .PRESENT_SRC_KHR)
+
+	if res := vk.EndCommandBuffer(cmd); res != .SUCCESS {
+		return .Vulkan_Error
+	}
+
+	// TODO: Dave next step is to actually do the vk.queuesubmit, and the submit info stuff
 	return
 }
 
