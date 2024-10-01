@@ -48,7 +48,7 @@ Error :: union #shared_nil {
 }
 
 get_current_frame :: proc(s: ^State) -> ^FrameData {
-	return &s.frames[s.frameNumber]
+	return &s.frames[s.frameNumber % FRAMES_OVERLAP]
 }
 
 init_vulkan :: proc(s: ^State) -> (err: Error) {
@@ -220,6 +220,45 @@ transition_image :: proc(cmd: vk.CommandBuffer, image: vk.Image, currentLayout: 
 	vk.CmdPipelineBarrier2(cmd, &depInfo)
 }
 
+semaphore_submit_info :: proc(stageMask: vk.PipelineStageFlags2, semaphore: vk.Semaphore) -> vk.SemaphoreSubmitInfo {
+	submitInfo: vk.SemaphoreSubmitInfo
+	submitInfo.sType = .SEMAPHORE_SUBMIT_INFO
+	submitInfo.pNext = nil
+	submitInfo.semaphore = semaphore
+	submitInfo.stageMask = stageMask
+	submitInfo.deviceIndex = 0
+	submitInfo.value = 1
+	return submitInfo
+}
+
+
+command_buffer_submit_info :: proc(cmd: vk.CommandBuffer) -> vk.CommandBufferSubmitInfo {
+	submitInfo: vk.CommandBufferSubmitInfo
+	submitInfo.sType = .COMMAND_BUFFER_SUBMIT_INFO
+	submitInfo.pNext = nil
+	submitInfo.commandBuffer = cmd
+	submitInfo.deviceMask = 0
+	return submitInfo
+}
+
+submit_info :: proc(cmd: ^vk.CommandBufferSubmitInfo, signalSemaphoreInfo: ^vk.SemaphoreSubmitInfo,
+	waitSemaphoreInfo: ^vk.SemaphoreSubmitInfo) -> vk.SubmitInfo2 {
+	info: vk.SubmitInfo2
+	info.sType = .SUBMIT_INFO_2
+	info.pNext = nil
+
+	info.waitSemaphoreInfoCount = waitSemaphoreInfo == nil ? 0 : 1
+	info.pWaitSemaphoreInfos = waitSemaphoreInfo
+
+	info.signalSemaphoreInfoCount = signalSemaphoreInfo == nil ? 0 : 1
+	info.pSignalSemaphoreInfos = signalSemaphoreInfo
+
+	info.commandBufferInfoCount = 1
+	info.pCommandBufferInfos = cmd
+
+	return info
+}
+
 draw :: proc(s: ^State) -> (err: Error) {
 	vk.WaitForFences(s.device.ptr, 1, &get_current_frame(s).renderFence, true, 1000000000)
 	vk.ResetFences(s.device.ptr, 1, &get_current_frame(s).renderFence)
@@ -260,7 +299,33 @@ draw :: proc(s: ^State) -> (err: Error) {
 		return .Vulkan_Error
 	}
 
-	// TODO: Dave next step is to actually do the vk.queuesubmit, and the submit info stuff
+	// do the actual submit, finally
+	cmdInfo := command_buffer_submit_info(cmd);
+
+	waitInfo := semaphore_submit_info({.COLOR_ATTACHMENT_OUTPUT_KHR}, get_current_frame(s).swapchainSemaphore)
+	signalInfo := semaphore_submit_info({.ALL_GRAPHICS}, get_current_frame(s).renderSemaphore)
+
+	submit: vk.SubmitInfo2 = submit_info(&cmdInfo, &signalInfo, &waitInfo)
+
+	if res := vk.QueueSubmit2(s.graphicsQueue, 1, &submit, get_current_frame(s).renderFence); res != .SUCCESS {
+		return .Vulkan_Error
+	}
+
+	// present the image to the screen, apparently that isn't done for us either
+	presentInfo: vk.PresentInfoKHR
+	presentInfo.sType = .PRESENT_INFO_KHR
+	presentInfo.pNext = nil
+	presentInfo.pSwapchains = &s.swapchain.ptr
+	presentInfo.swapchainCount = 1
+	presentInfo.pWaitSemaphores = &get_current_frame(s).renderSemaphore
+	presentInfo.waitSemaphoreCount = 1
+	presentInfo.pImageIndices = &swapchainImageIndex;
+
+	if res := vk.QueuePresentKHR(s.graphicsQueue, &presentInfo); res != .SUCCESS {
+		return .Vulkan_Error
+	}
+	s.frameNumber += 1
+
 	return
 }
 
@@ -274,6 +339,6 @@ main :: proc() {
 	for !glfw.WindowShouldClose(state.window)
 	{
 		glfw.PollEvents()
-
+		draw(&state)
 	}
 }
