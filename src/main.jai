@@ -15,11 +15,19 @@ HEIGHT :: 600;
 
 FrameData :: struct
 {
-	command_pool: VkCommandPool;
-	main_command_buffer: VkCommandBuffer;
-	swapchain_semaphore: VkSemaphore;
-	render_semaphore: VkSemaphore;
-	render_fence: VkFence;
+	commandPool: VkCommandPool;
+	mainCommandBuffer: VkCommandBuffer;
+	swapchainSemaphore: VkSemaphore;
+	renderSempahore: VkSemaphore;
+	renderFence: VkFence;
+}
+
+AllocatedImage :: struct {
+	image: VkImage;
+	imageView: VkImageView;
+	allocation: VmaAllocation;
+	imageExtent: VkExtent3D;
+	imageFormat: VkFormat;
 }
 
 FRAMES_OVERLAP :: 2;
@@ -28,21 +36,25 @@ State :: struct {
 	window: *SDL_Window;
 
 	instance: VkInstance;
-	debug_messenger: VkDebugUtilsMessengerEXT;
-	physical_device: VkPhysicalDevice;
+	debugMessenger: VkDebugUtilsMessengerEXT;
+	physicalDevice: VkPhysicalDevice;
 	device: VkDevice;
 	surface: VkSurfaceKHR;
-	graphics_queue: VkQueue;
-	present_queue: VkQueue;
-	graphics_queue_family: int;
-	present_queue_family: int;
+	graphicsQueue: VkQueue;
+	presentQueue: VkQueue;
+	graphicsQueueFamily: int;
+	presentQueueFamily: int;
 	present_mode: VkPresentModeKHR;
 	swapchain: VkSwapchainKHR;
-	swapchain_image_format: VkFormat;
-	swapchain_extent: VkExtent2D;
-	swapchain_images: [..] VkImage;
-	swapchain_image_views: [..] VkImageView;
+	swapchainImageFormat: VkFormat;
+	swapchainExtent: VkExtent2D;
+	swapchainImages: [..] VkImage;
+	swapchainImageViews: [..] VkImageView;
 
+	gpuAllocator: VmaAllocator;
+
+	drawImage: AllocatedImage;
+	drawExtent: VkExtent2D;
 	frames: [..] FrameData;
 	frame_number: int;
 }
@@ -84,15 +96,15 @@ main :: () {
 
 draw :: (s: *State) {
 	ONE_SECOND_IN_NS :: 1000000000;
-	vkWaitForFences(s.device, 1, *get_current_frame(s).render_fence, VK_TRUE, ONE_SECOND_IN_NS);
-	vkResetFences(s.device, 1, *get_current_frame(s).render_fence);
+	vkWaitForFences(s.device, 1, *get_current_frame(s).renderFence, VK_TRUE, ONE_SECOND_IN_NS);
+	vkResetFences(s.device, 1, *get_current_frame(s).renderFence);
 
 	swapchain_image_index: u32;
 	vkAcquireNextImageKHR(
 		s.device, 
 		s.swapchain, 
 		ONE_SECOND_IN_NS, 
-		get_current_frame(s).swapchain_semaphore, 
+		get_current_frame(s).swapchainSemaphore, 
 		null, 
 		*swapchain_image_index
 	);
@@ -101,40 +113,50 @@ draw :: (s: *State) {
 		flags = .ONE_TIME_SUBMIT_BIT
 	};
 
-	cmd := get_current_frame(s).main_command_buffer;
+	cmd := get_current_frame(s).mainCommandBuffer;
 	vkResetCommandBuffer(cmd, 0);
+
+	s.drawExtent.width = s.drawImage.imageExtent.width;
+	s.drawExtent.height = s.drawImage.imageExtent.height;
 
 	vkBeginCommandBuffer(cmd, *cmd_begin_info);
 
-	transition_image(cmd, s.swapchain_images[swapchain_image_index], .UNDEFINED, .GENERAL);
+	transition_image(cmd, s.drawImage.image, .UNDEFINED, .GENERAL);
 
+	// Actually clear our screen
 	clear_value: VkClearColorValue;
 	flash := abs(sin(cast(float32)s.frame_number / 1020.0));
 	clear_value._float32 = float32.[0.0, 0.0, xx flash, 1.0];
 	 
 	clear_range := image_subresource_range(.COLOR_BIT);
-	vkCmdClearColorImage(cmd, s.swapchain_images[swapchain_image_index], .GENERAL, *clear_value, 1, *clear_range);
+	vkCmdClearColorImage(cmd, s.drawImage.image, .GENERAL, *clear_value, 1, *clear_range);
 
-	transition_image(cmd, s.swapchain_images[swapchain_image_index], .GENERAL, .PRESENT_SRC_KHR);
+	// blit our frame onto the swapchain
+	transition_image(cmd, s.drawImage.image, .GENERAL, .TRANSFER_SRC_OPTIMAL);
+	transition_image(cmd, s.swapchainImages[swapchain_image_index], .UNDEFINED, .TRANSFER_DST_OPTIMAL);
+
+	copy_image_to_image(cmd, s.drawImage.image, s.swapchainImages[swapchain_image_index], s.drawExtent, s.swapchainExtent);
+
+	transition_image(cmd, s.swapchainImages[swapchain_image_index], .TRANSFER_DST_OPTIMAL, .PRESENT_SRC_KHR);
 
 	vkEndCommandBuffer(cmd);
 
 	cmd_info := command_buffer_submit_info(cmd);
 
-	wait_info := semaphore_submit_info( VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR, get_current_frame(s).swapchain_semaphore);
-	signal_info := semaphore_submit_info( VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, get_current_frame(s).render_semaphore);
+	wait_info := semaphore_submit_info( VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR, get_current_frame(s).swapchainSemaphore);
+	signal_info := semaphore_submit_info( VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, get_current_frame(s).renderSempahore);
 
 	submit := submit_info(*cmd_info, *signal_info, *wait_info);
-	vkQueueSubmit2(s.graphics_queue, 1, *submit, get_current_frame(s).render_fence);
+	vkQueueSubmit2(s.graphicsQueue, 1, *submit, get_current_frame(s).renderFence);
 
 	present_info := VkPresentInfoKHR.{
 		pSwapchains = *s.swapchain,
 		swapchainCount = 1,
-		pWaitSemaphores = *get_current_frame(s).render_semaphore,
+		pWaitSemaphores = *get_current_frame(s).renderSempahore,
 		waitSemaphoreCount = 1,
 		pImageIndices = *swapchain_image_index
 	};
-	vkQueuePresentKHR(s.present_queue, *present_info);
+	vkQueuePresentKHR(s.presentQueue, *present_info);
 	s.frame_number += 1;
 }
 
@@ -246,10 +268,10 @@ init_vulkan :: (state: *State) -> bool {
 		}
 	}
 	
-	state.physical_device = highest_scored_device.device;
+	state.physicalDevice = highest_scored_device.device;
 
 	// device
-	indices := find_queue_families(state.physical_device, state.surface);
+	indices := find_queue_families(state.physicalDevice, state.surface);
 	
 	indices_array := u32.[indices.graphics_family, indices.present_family];
 	unique_indices: [..] u32;
@@ -297,22 +319,29 @@ init_vulkan :: (state: *State) -> bool {
 		device_create_info.ppEnabledLayerNames = REQUIRED_VALIDATION_LAYERS.data;
 	}
 	
-	result = vkCreateDevice(state.physical_device, *device_create_info, null, *state.device);
+	result = vkCreateDevice(state.physicalDevice, *device_create_info, null, *state.device);
 	assert(result == .SUCCESS, "Failed to create logical device!");
 	
-	vkGetDeviceQueue(state.device, indices.graphics_family, 0, *state.graphics_queue);
-	vkGetDeviceQueue(state.device, indices.present_family, 0, *state.present_queue);
+	vkGetDeviceQueue(state.device, indices.graphics_family, 0, *state.graphicsQueue);
+	vkGetDeviceQueue(state.device, indices.present_family, 0, *state.presentQueue);
 
-	state.graphics_queue_family = indices.graphics_family;
-	state.present_queue_family = indices.graphics_family;
+	state.graphicsQueueFamily = indices.graphics_family;
+	state.presentQueueFamily = indices.graphics_family;
 
+
+	allocatorInfo: VmaAllocatorCreateInfo;
+	allocatorInfo.physicalDevice = state.physicalDevice; 
+	allocatorInfo.device = state.device; 
+	allocatorInfo.instance = state.instance; 
+	allocatorInfo.flags = .VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT; 
+	vmaCreateAllocator(*allocatorInfo, *state.gpuAllocator);
 	return result == .SUCCESS;
 }
 
 init_swapchain :: (state: *State) {
 	using state;
 	
-	swapchain_support := query_swapchain_support(physical_device, surface);
+	swapchain_support := query_swapchain_support(physicalDevice, surface);
 	surface_format := choose_swapchain_surface_format(swapchain_support.formats);
 	present_mode = choose_swapchain_present_mode(swapchain_support.present_modes);
 	extent := choose_swapchain_extent(swapchain_support.capabilities, window);
@@ -330,7 +359,7 @@ init_swapchain :: (state: *State) {
 	create_info.imageArrayLayers = 1;
 	create_info.imageUsage = .COLOR_ATTACHMENT_BIT | .TRANSFER_DST_BIT;
 	
-	indices := find_queue_families(physical_device, surface);
+	indices := find_queue_families(physicalDevice, surface);
 	queue_family_indices := u32.[indices.graphics_family, indices.present_family];
 	
 	if indices.graphics_family != indices.present_family
@@ -354,12 +383,33 @@ init_swapchain :: (state: *State) {
 	assert(result == .SUCCESS, "Failed to create swapchain");
 
 	vkGetSwapchainImagesKHR(device, swapchain, *image_count, null);
-	array_resize(*swapchain_images, image_count);
-	vkGetSwapchainImagesKHR(device, swapchain, *image_count, swapchain_images.data);
-	swapchain_image_format = surface_format.format;
-	swapchain_extent = extent;
+	array_resize(*swapchainImages, image_count);
+	vkGetSwapchainImagesKHR(device, swapchain, *image_count, swapchainImages.data);
+	swapchainImageFormat = surface_format.format;
+	swapchainExtent = extent;
 	
 	array_resize(*frames, image_count);
+
+	drawImage.imageExtent = VkExtent3D.{width = WIDTH, height = HEIGHT, depth=1};
+	drawImage.imageFormat = .R16G16B16A16_SFLOAT; 
+
+	drawImageUsageFlags : VkImageUsageFlags;
+	drawImageUsageFlags |= .VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+	drawImageUsageFlags |= .VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	drawImageUsageFlags |= .VK_IMAGE_USAGE_STORAGE_BIT;
+	drawImageUsageFlags |= .VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+
+	imageInfo := image_create_info(drawImage.imageFormat, drawImageUsageFlags, drawImage.imageExtent);
+
+	imgAllocInfo: VmaAllocationCreateInfo;
+	imgAllocInfo.usage = .GPU_ONLY;
+	imgAllocInfo.requiredFlags = .DEVICE_LOCAL_BIT;
+
+	vmaCreateImage(gpuAllocator, *imageInfo, *imgAllocInfo, *drawImage.image, *drawImage.allocation, null);
+
+	imageViewInfo := image_view_create_info(drawImage.imageFormat, drawImage.image, .VK_IMAGE_ASPECT_COLOR_BIT);
+
+	vkCreateImageView(device, *imageViewInfo, null, *drawImage.imageView);
 }
 
 init_commands :: (state: *State) {
@@ -368,21 +418,21 @@ init_commands :: (state: *State) {
 	
 	command_pool_info := VkCommandPoolCreateInfo.{
 		flags = .RESET_COMMAND_BUFFER_BIT,
-		queueFamilyIndex = xx graphics_queue_family
+		queueFamilyIndex = xx graphicsQueueFamily
 	};
 
 	for frames
 	{
-		result := vkCreateCommandPool(device, *command_pool_info, null, *it.command_pool);
+		result := vkCreateCommandPool(device, *command_pool_info, null, *it.commandPool);
 		assert(result == .SUCCESS, "Could not create command pool.");
 	
 		cmd_alloc_info := VkCommandBufferAllocateInfo.{
-			commandPool = it.command_pool,
+			commandPool = it.commandPool,
 			commandBufferCount = 1,
 			level = .PRIMARY
 		};
 		
-		result = vkAllocateCommandBuffers(device, *cmd_alloc_info, *it.main_command_buffer);
+		result = vkAllocateCommandBuffers(device, *cmd_alloc_info, *it.mainCommandBuffer);
 		assert(result == .SUCCESS, "Could not allocate command buffer.");
 	}
 }
@@ -399,13 +449,13 @@ init_sync_structures :: (state: *State) {
 	
 	for frames
 	{
-		result := vkCreateFence(device, *fence_create_info, null, *it.render_fence);
+		result := vkCreateFence(device, *fence_create_info, null, *it.renderFence);
 		assert(result == .SUCCESS, "Could not create fence.");
 
-		result = vkCreateSemaphore(device, *semaphore_create_info, null, *it.swapchain_semaphore);
+		result = vkCreateSemaphore(device, *semaphore_create_info, null, *it.swapchainSemaphore);
 		assert(result == .SUCCESS, "Could not create semaphore.");
 		
-		result = vkCreateSemaphore(device, *semaphore_create_info, null, *it.render_semaphore);
+		result = vkCreateSemaphore(device, *semaphore_create_info, null, *it.renderSempahore);
 		assert(result == .SUCCESS, "Could not create semaphore.");
 	}
 }
@@ -771,6 +821,41 @@ transition_image :: (cmd: VkCommandBuffer, image: VkImage, current_layout: VkIma
     vkCmdPipelineBarrier2(cmd, *dep_info);
 }
 
+copy_image_to_image :: (cmd: VkCommandBuffer, source: VkImage, destination: VkImage, srcSize: VkExtent2D, dstSize: VkExtent2D) {
+	blitRegion: VkImageBlit2;
+	blitRegion.srcOffsets[1].x = xx srcSize.width;
+	blitRegion.srcOffsets[1].y = xx srcSize.height;
+	blitRegion.srcOffsets[1].z = 1;
+
+	blitRegion.dstOffsets[1].x = xx dstSize.width;
+	blitRegion.dstOffsets[1].y = xx dstSize.height;
+	blitRegion.dstOffsets[1].z = 1;
+
+	blitRegion.srcSubresource.aspectMask = .COLOR_BIT;
+	blitRegion.srcSubresource.baseArrayLayer = 0;
+	blitRegion.srcSubresource.layerCount = 1;
+	blitRegion.srcSubresource.mipLevel = 0;
+
+	blitRegion.dstSubresource.aspectMask = .COLOR_BIT;
+	blitRegion.dstSubresource.baseArrayLayer = 0;
+	blitRegion.dstSubresource.layerCount = 1;
+	blitRegion.dstSubresource.mipLevel = 0;
+
+	blitInfo: VkBlitImageInfo2;
+	blitInfo.dstImage = destination;
+	blitInfo.dstImageLayout = .TRANSFER_DST_OPTIMAL;
+	blitInfo.srcImage = source;
+	blitInfo.srcImageLayout = .TRANSFER_SRC_OPTIMAL;
+	blitInfo.filter = .LINEAR;
+	blitInfo.regionCount = 1;
+	blitInfo.pRegions = *blitRegion;
+
+	vkCmdBlitImage2(cmd, *blitInfo);
+}
+
+
+// createinfos
+
 command_buffer_submit_info :: (cmd: VkCommandBuffer) -> VkCommandBufferSubmitInfo {
 	info: VkCommandBufferSubmitInfo;
 	info.commandBuffer = cmd;
@@ -797,6 +882,33 @@ submit_info :: ( cmd: *VkCommandBufferSubmitInfo, signal_semaphore_info: *VkSema
     info.pCommandBufferInfos = cmd;
     return info;
 }
+
+image_create_info :: (format: VkFormat, usageFlags: VkImageUsageFlags, extent: VkExtent3D) -> VkImageCreateInfo {
+	info: VkImageCreateInfo;
+	info.imageType = .VK_IMAGE_TYPE_2D;
+	info.format = format;
+	info.extent = extent;
+	info.mipLevels = 1;
+	info.arrayLayers = 1;
+	info.samples = .VK_SAMPLE_COUNT_1_BIT;
+	info.tiling = .VK_IMAGE_TILING_OPTIMAL;
+	info.usage = usageFlags;
+	return info;
+}
+
+image_view_create_info :: (format: VkFormat, image: VkImage, aspectFlags: VkImageAspectFlags) -> VkImageViewCreateInfo {
+	info: VkImageViewCreateInfo;
+	info.viewType = .VK_IMAGE_VIEW_TYPE_2D;
+	info.image = image;
+	info.format = format;
+	info.subresourceRange.baseMipLevel = 0;
+	info.subresourceRange.levelCount = 1;
+	info.subresourceRange.baseArrayLayer = 0;
+	info.subresourceRange.layerCount = 1;
+	info.subresourceRange.aspectMask = aspectFlags;
+	return info;
+}
+
 // Return the length of s, a C-style zero-terminated string.
 // If you pass in a pointer that is not zero-terminated, BAD things will happen!
 strlen :: (s: *u8) -> s64 {  
