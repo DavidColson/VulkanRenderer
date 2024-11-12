@@ -7,6 +7,8 @@
 #import "String";
 #import "Math";
 
+#load "descriptors.jai";
+
 VALIDATION_ENABLED :: BUILD_TYPE != .RELEASE;
 REQUIRED_VALIDATION_LAYERS :: (*u8).["VK_LAYER_KHRONOS_validation"];
 
@@ -91,6 +93,7 @@ main :: () {
 			}
 		}
 		draw(*state);
+		reset_temporary_storage();
 	}
 }
 
