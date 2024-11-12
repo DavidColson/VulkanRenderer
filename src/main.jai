@@ -53,6 +53,13 @@ State :: struct {
 	swapchainImages: [..] VkImage;
 	swapchainImageViews: [..] VkImageView;
 
+	globalDescriptorAllocator: DescriptorAllocator;
+	drawImageDescriptors: VkDescriptorSet;
+	drawImageDescriptorLayout: VkDescriptorSetLayout;
+
+	gradientPipeline: VkPipeline;
+	gradientPipelineLayout: VkPipelineLayout;
+
 	gpuAllocator: VmaAllocator;
 
 	drawImage: AllocatedImage;
@@ -127,12 +134,16 @@ draw :: (s: *State) {
 	transition_image(cmd, s.drawImage.image, .UNDEFINED, .GENERAL);
 
 	// Actually clear our screen
-	clear_value: VkClearColorValue;
-	flash := abs(sin(cast(float32)s.frame_number / 1020.0));
-	clear_value._float32 = float32.[0.0, 0.0, xx flash, 1.0];
-	 
-	clear_range := image_subresource_range(.COLOR_BIT);
-	vkCmdClearColorImage(cmd, s.drawImage.image, .GENERAL, *clear_value, 1, *clear_range);
+	// clear_value: VkClearColorValue;
+	// flash := abs(sin(cast(float32)s.frame_number / 1020.0));
+	// clear_value._float32 = float32.[0.0, 0.0, xx flash, 1.0];
+	//  
+	// clear_range := image_subresource_range(.COLOR_BIT);
+	// vkCmdClearColorImage(cmd, s.drawImage.image, .GENERAL, *clear_value, 1, *clear_range);
+
+	vkCmdBindPipeline(cmd, .COMPUTE, s.gradientPipeline);
+	vkCmdBindDescriptorSets(cmd, .COMPUTE, s.gradientPipelineLayout, 0, 1, *s.drawImageDescriptors, 0, null);
+	vkCmdDispatch(cmd, xx ceil(s.drawExtent.width / 16.0), xx ceil(s.drawExtent.width / 16.0), 1);
 
 	// blit our frame onto the swapchain
 	transition_image(cmd, s.drawImage.image, .GENERAL, .TRANSFER_SRC_OPTIMAL);
@@ -181,6 +192,9 @@ init :: (s: *State) {
 	init_swapchain(s);
 	init_commands(s);
 	init_sync_structures(s);
+	init_descriptors(s);
+	init_pipelines(s);
+
 }
 
 init_vulkan :: (state: *State) -> bool {
@@ -461,6 +475,77 @@ init_sync_structures :: (state: *State) {
 		result = vkCreateSemaphore(device, *semaphore_create_info, null, *it.renderSempahore);
 		assert(result == .SUCCESS, "Could not create semaphore.");
 	}
+}
+
+init_descriptors :: (state: *State) {
+	using state;
+
+	sizes := PoolSizeRatio.[.{ .STORAGE_IMAGE, 1 }];
+
+	globalDescriptorAllocator = init_pool(device, 10, sizes);
+	
+	{
+		builder: DescriptorLayoutBuilder;
+		add_binding_to_builder(*builder, 0, .STORAGE_IMAGE);
+		drawImageDescriptorLayout = build_descriptor_layout(*builder, device, .COMPUTE_BIT);
+	}
+
+	drawImageDescriptors = allocate_descriptor_set(*globalDescriptorAllocator, device, drawImageDescriptorLayout);
+
+	imgInfo: VkDescriptorImageInfo;
+	imgInfo.imageLayout = .GENERAL;
+	imgInfo.imageView = drawImage.imageView;
+
+	drawImageWrite: VkWriteDescriptorSet;
+	drawImageWrite.dstSet = drawImageDescriptors;
+	drawImageWrite.descriptorCount = 1;
+	drawImageWrite.descriptorType = .STORAGE_IMAGE;
+	drawImageWrite.pImageInfo = *imgInfo;
+
+	vkUpdateDescriptorSets(device, 1, *drawImageWrite, 0, null);
+}
+
+init_pipelines :: (state: *State) {
+	init_background_pipelines(state);
+}
+
+init_background_pipelines :: (state: *State) {
+	using state;
+	computeLayout: VkPipelineLayoutCreateInfo;
+	computeLayout.pSetLayouts = *drawImageDescriptorLayout;
+	computeLayout.setLayoutCount = 1;
+
+	vkCreatePipelineLayout(device, *computeLayout, null, *gradientPipelineLayout);
+
+	// compile time load the shader binary
+	// @todo potentially you can auto create these constants in the build code for each filename that gets compiled
+	GRADIENT_SHADER :: #run SHADER_GET("gradient");
+	computeDrawShader := load_shader_module(GRADIENT_SHADER, device);
+
+	stageInfo: VkPipelineShaderStageCreateInfo;
+	stageInfo.stage = .COMPUTE_BIT;
+	stageInfo.module = computeDrawShader;
+	stageInfo.pName = "main";
+
+	computePipelineCreateInfo: VkComputePipelineCreateInfo;
+	computePipelineCreateInfo.layout = gradientPipelineLayout;
+	computePipelineCreateInfo.stage = stageInfo;
+
+	result := vkCreateComputePipelines(device, null, 1, *computePipelineCreateInfo, null, *gradientPipeline);
+	assert(result == .SUCCESS, "Failed to create compute pipeline");
+
+	vkDestroyShaderModule(device, computeDrawShader, null);
+}
+
+load_shader_module :: (bytes: []u8, device: VkDevice) -> VkShaderModule {
+	createInfo: VkShaderModuleCreateInfo;
+	createInfo.codeSize = xx bytes.count;
+	createInfo.pCode = cast(*u32) bytes.data;
+
+	shaderModule: VkShaderModule;
+	result := vkCreateShaderModule(device, *createInfo, null, *shaderModule);
+	assert(result == .SUCCESS, "Failed to create shader module");
+	return shaderModule;
 }
 
 logger :: (message: string, data: *void, info: Log_Info) {
