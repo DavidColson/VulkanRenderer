@@ -30,8 +30,14 @@ build :: ()
     
 	// build shaders
 	make_directory_if_it_does_not_exist(".build/");
-	processResult, outputStr, errorStr := run_command("glslc", "shaders/gradient.comp", "-o", ".build/gradient.spv", print_captured_output=true);
-	if processResult.exit_code != 0 compiler_report(errorStr);
+	build_shader :: (input: string, output: string) {
+		processResult, outputStr, errorStr := run_command("glslc", input, "-o", output, print_captured_output=true);
+		if processResult.exit_code != 0 compiler_report(errorStr);
+	}
+
+	build_shader("shaders/gradient.comp", ".build/gradient.comp.bin");
+	build_shader("shaders/imgui.frag", ".build/imgui.frag.bin");
+	build_shader("shaders/imgui.vert", ".build/imgui.vert.bin");
 
     target_options.output_executable_name = "vulkan";
 	set_build_options(target_options, w);
@@ -49,7 +55,7 @@ build :: ()
 	SHADER_GET :: (name: string) -> [] u8 {
 		#import "File";
 		#import "Basic";
-		return xx read_entire_file(tprint(".build/%.spv", name));
+		return xx read_entire_file(tprint(".build/%.bin", name));
 	}
 	DONE, w);
 

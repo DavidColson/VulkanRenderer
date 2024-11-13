@@ -35,6 +35,9 @@ using SDL_bool :: enum u32 {
     SDL_TRUE :: 1;
 }
 
+SDL_malloc :: (size: u64) -> *void #foreign SDL2;
+SDL_free :: (mem: *void) #foreign SDL2;
+
 // SDL_error.h
 
 SDL_GetError :: () -> *u8 #foreign SDL2;

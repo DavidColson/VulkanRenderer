@@ -8,6 +8,7 @@
 #import "Math";
 
 #load "descriptors.jai";
+#load "imgui_backend.jai";
 
 VALIDATION_ENABLED :: BUILD_TYPE != .RELEASE;
 REQUIRED_VALIDATION_LAYERS :: (*u8).["VK_LAYER_KHRONOS_validation"];
@@ -57,6 +58,8 @@ State :: struct {
 	drawImageDescriptors: VkDescriptorSet;
 	drawImageDescriptorLayout: VkDescriptorSetLayout;
 
+	imguiDescriptorPool: VkDescriptorPool;
+
 	gradientPipeline: VkPipeline;
 	gradientPipelineLayout: VkPipelineLayout;
 
@@ -98,7 +101,14 @@ main :: () {
 						should_stop_rendering = true;
 					}
 			}
+			ImGui_ImplSDL2_ProcessEvent(*event);
 		}
+		ImGui_ImplVulkan_NewFrame();
+		ImGui_ImplSDL2_NewFrame();
+		ImGui.NewFrame();
+		ImGui.ShowDemoWindow();
+		ImGui.Render();
+
 		draw(*state);
 		reset_temporary_storage();
 	}
@@ -141,6 +151,7 @@ draw :: (s: *State) {
 	// clear_range := image_subresource_range(.COLOR_BIT);
 	// vkCmdClearColorImage(cmd, s.drawImage.image, .GENERAL, *clear_value, 1, *clear_range);
 
+	// compute to draw our gradient
 	vkCmdBindPipeline(cmd, .COMPUTE, s.gradientPipeline);
 	vkCmdBindDescriptorSets(cmd, .COMPUTE, s.gradientPipelineLayout, 0, 1, *s.drawImageDescriptors, 0, null);
 	vkCmdDispatch(cmd, xx ceil(s.drawExtent.width / 16.0), xx ceil(s.drawExtent.width / 16.0), 1);
@@ -151,7 +162,26 @@ draw :: (s: *State) {
 
 	copy_image_to_image(cmd, s.drawImage.image, s.swapchainImages[swapchain_image_index], s.drawExtent, s.swapchainExtent);
 
-	transition_image(cmd, s.swapchainImages[swapchain_image_index], .TRANSFER_DST_OPTIMAL, .PRESENT_SRC_KHR);
+	transition_image(cmd, s.swapchainImages[swapchain_image_index], .TRANSFER_DST_OPTIMAL, .COLOR_ATTACHMENT_OPTIMAL);
+
+	// draw imgui render lists
+	attachmentInfo: VkRenderingAttachmentInfo;
+	attachmentInfo.imageView = s.swapchainImageViews[swapchain_image_index];
+	attachmentInfo.imageLayout = .COLOR_ATTACHMENT_OPTIMAL;
+	attachmentInfo.loadOp = .LOAD;
+	attachmentInfo.storeOp = .STORE;
+
+	renderingInfo: VkRenderingInfo;
+	renderingInfo.renderArea.extent = s.swapchainExtent;
+	renderingInfo.layerCount = 1;
+	renderingInfo.colorAttachmentCount = 1;
+	renderingInfo.pColorAttachments = *attachmentInfo;
+
+	vkCmdBeginRendering(cmd, *renderingInfo);
+	ImGui_ImplVulkan_RenderDrawData(ImGui.GetDrawData(), cmd);
+	vkCmdEndRendering(cmd);
+
+	transition_image(cmd, s.swapchainImages[swapchain_image_index], .COLOR_ATTACHMENT_OPTIMAL, .PRESENT_SRC_KHR);
 
 	vkEndCommandBuffer(cmd);
 
@@ -190,11 +220,12 @@ init :: (s: *State) {
 
 	init_vulkan(s);
 	init_swapchain(s);
+	init_swapchain_image_views(s);
 	init_commands(s);
 	init_sync_structures(s);
 	init_descriptors(s);
 	init_pipelines(s);
-
+	init_imgui(s);
 }
 
 init_vulkan :: (state: *State) -> bool {
@@ -429,6 +460,31 @@ init_swapchain :: (state: *State) {
 	vkCreateImageView(device, *imageViewInfo, null, *drawImage.imageView);
 }
 
+init_swapchain_image_views :: (state: *State) {
+	using state;
+	
+	array_resize(*swapchainImageViews, swapchainImages.count);
+	
+	for swapchainImages
+	{
+		createdInfo: VkImageViewCreateInfo;
+		createdInfo.image = it;
+		createdInfo.viewType = ._2D;
+		createdInfo.format = swapchainImageFormat;
+		createdInfo.components.r = .IDENTITY;
+		createdInfo.components.g = .IDENTITY;
+		createdInfo.components.b = .IDENTITY;
+		createdInfo.components.a = .IDENTITY;
+		createdInfo.subresourceRange.aspectMask = .COLOR_BIT;
+		createdInfo.subresourceRange.baseMipLevel = 0;
+		createdInfo.subresourceRange.levelCount = 1;
+		createdInfo.subresourceRange.baseArrayLayer = 0;
+		createdInfo.subresourceRange.layerCount = 1;
+		
+		result := vkCreateImageView(device, *createdInfo, null, *swapchainImageViews[it_index]);
+	}
+}
+
 init_commands :: (state: *State) {
 	using state;
 	
@@ -519,7 +575,7 @@ init_background_pipelines :: (state: *State) {
 
 	// compile time load the shader binary
 	// @todo potentially you can auto create these constants in the build code for each filename that gets compiled
-	GRADIENT_SHADER :: #run SHADER_GET("gradient");
+	GRADIENT_SHADER :: #run SHADER_GET("gradient.comp");
 	computeDrawShader := load_shader_module(GRADIENT_SHADER, device);
 
 	stageInfo: VkPipelineShaderStageCreateInfo;
@@ -535,6 +591,69 @@ init_background_pipelines :: (state: *State) {
 	assert(result == .SUCCESS, "Failed to create compute pipeline");
 
 	vkDestroyShaderModule(device, computeDrawShader, null);
+}
+
+alloc_imgui :: (sz: u64, user_data: *void) -> *void #c_call
+{
+	new_context: Context;
+	push_context new_context
+	{
+		return alloc(xx sz);
+	}
+}
+
+free_imgui :: (ptr: *void, user_data: *void) #c_call
+{
+	new_context: Context;
+	push_context new_context
+	{
+		free(ptr);
+	}
+}
+
+init_imgui :: (s: *State) {
+	using s;
+	poolSizes := VkDescriptorPoolSize.[.{.COMBINED_IMAGE_SAMPLER, 1}];
+	poolInfo: VkDescriptorPoolCreateInfo;
+	poolInfo.flags = .FREE_DESCRIPTOR_SET_BIT;
+	poolInfo.maxSets = 1;
+	poolInfo.poolSizeCount = poolSizes.count;
+	poolInfo.pPoolSizes = poolSizes.data;
+	result := vkCreateDescriptorPool(device, *poolInfo, null, *imguiDescriptorPool);
+	assert(result == .SUCCESS, "Could not create descriptor pool");
+
+	ImGui.SetAllocatorFunctions(alloc_imgui, free_imgui);
+	ImGui.CreateContext();
+
+	io := ImGui.GetIO();
+	io.ConfigFlags_ |= .NavEnableKeyboard;
+	io.ConfigFlags_ |= .DockingEnable;
+
+	ImGui_ImplSDL2_InitForVulkan(window);
+
+	pipelineRenderingInfo: VkPipelineRenderingCreateInfoKHR;
+	pipelineRenderingInfo.colorAttachmentCount = 1;
+	pipelineRenderingInfo.pColorAttachmentFormats = *swapchainImageFormat;
+
+	initInfo: ImGui_ImplVulkan_InitInfo;
+	initInfo.Instance = instance;
+	initInfo.PhysicalDevice = physicalDevice;
+	initInfo.Device = device;
+	initInfo.QueueFamily = xx graphicsQueueFamily;
+	initInfo.Queue = graphicsQueue;
+	initInfo.PipelineCache = VK_NULL_HANDLE;
+	initInfo.DescriptorPool = imguiDescriptorPool;
+	initInfo.RenderPass = null;
+	initInfo.UseDynamicRendering = true;
+	initInfo.PipelineRenderingCreateInfo = pipelineRenderingInfo;
+	initInfo.Subpass = 0;
+	initInfo.MinImageCount = xx swapchainImages.count;
+	initInfo.ImageCount = xx swapchainImages.count;
+	initInfo.MSAASamples = ._1_BIT;
+	initInfo.Allocator = null;
+
+	ImGui_ImplVulkan_Init(*initInfo);
+	ImGui_ImplVulkan_CreateFontsTexture();
 }
 
 load_shader_module :: (bytes: []u8, device: VkDevice) -> VkShaderModule {

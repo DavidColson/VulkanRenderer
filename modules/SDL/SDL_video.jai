@@ -143,7 +143,7 @@ SDL_GetNumVideoDisplays :: () -> s32 #foreign SDL2;
 SDL_GetDisplayName :: (displayIndex: s32) -> *u8 #foreign SDL2;
 SDL_GetDisplayBounds :: (displayIndex: s32, rect: *SDL_Rect) -> s32 #foreign SDL2;
 SDL_GetDisplayDPI :: (displayIndex: s32, ddpi: *float, hdpi: *float, vdpi: *float) -> s32 #foreign SDL2;
-//SDL_GetDisplayUsableBounds :: (displayIndex: s32, rect: *SDL_Rect) -> s32 #foreign SDL2;
+SDL_GetDisplayUsableBounds :: (displayIndex: s32, rect: *SDL_Rect) -> s32 #foreign SDL2;
 SDL_GetNumDisplayModes :: (displayIndex: s32) -> s32 #foreign SDL2;
 SDL_GetDisplayMode :: (displayIndex: s32, modeIndex: s32, mode: *SDL_DisplayMode) -> s32 #foreign SDL2;
 SDL_GetDesktopDisplayMode :: (displayIndex: s32, mode: *SDL_DisplayMode) -> s32 #foreign SDL2;

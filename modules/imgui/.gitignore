@@ -1,0 +1,6 @@
+*.pdb
+*.exe
+.build/
+imgui.ini
+SDL2.dll
+examples/imgui_sdl_gl_main
