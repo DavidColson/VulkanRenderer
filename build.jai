@@ -38,6 +38,8 @@ build :: ()
 	build_shader("shaders/gradient.comp", ".build/gradient.comp.bin");
 	build_shader("shaders/imgui.frag", ".build/imgui.frag.bin");
 	build_shader("shaders/imgui.vert", ".build/imgui.vert.bin");
+	build_shader("shaders/colored_triangle.vert", ".build/colored_triangle.vert.bin");
+	build_shader("shaders/colored_triangle.frag", ".build/colored_triangle.frag.bin");
 
     target_options.output_executable_name = "vulkan";
 	set_build_options(target_options, w);

@@ -8,6 +8,7 @@
 #import "Math";
 
 #load "descriptors.jai";
+#load "pipeline_builder.jai";
 #load "imgui_backend.jai";
 
 VALIDATION_ENABLED :: BUILD_TYPE != .RELEASE;
@@ -69,6 +70,9 @@ State :: struct {
 
 	gradientPipeline: VkPipeline;
 	gradientPipelineLayout: VkPipelineLayout;
+
+	trianglePipeline: VkPipeline;
+	trianglePipelineLayout: VkPipelineLayout;
 
 	gpuAllocator: VmaAllocator;
 
@@ -163,6 +167,9 @@ draw :: (s: *State) {
 
 	transition_image(cmd, s.drawImage.image, .UNDEFINED, .GENERAL);
 
+	// draw background with compute
+	////////////////////////////////
+
 	// Actually clear our screen
 	// clear_value: VkClearColorValue;
 	// flash := abs(sin(cast(float32)s.frame_number / 1020.0));
@@ -178,8 +185,13 @@ draw :: (s: *State) {
 	vkCmdPushConstants(cmd, s.gradientPipelineLayout, .COMPUTE_BIT, 0, size_of(ComputePushConstants), *s.pc);
 	vkCmdDispatch(cmd, xx ceil(s.drawExtent.width / 16.0), xx ceil(s.drawExtent.width / 16.0), 1);
 
+
+	transition_image(cmd, s.drawImage.image, .GENERAL, .COLOR_ATTACHMENT_OPTIMAL);
+
+	draw_geometry(cmd, s);
+
 	// blit our frame onto the swapchain
-	transition_image(cmd, s.drawImage.image, .GENERAL, .TRANSFER_SRC_OPTIMAL);
+	transition_image(cmd, s.drawImage.image, .COLOR_ATTACHMENT_OPTIMAL, .TRANSFER_SRC_OPTIMAL);
 	transition_image(cmd, s.swapchainImages[swapchain_image_index], .UNDEFINED, .TRANSFER_DST_OPTIMAL);
 
 	copy_image_to_image(cmd, s.drawImage.image, s.swapchainImages[swapchain_image_index], s.drawExtent, s.swapchainExtent);
@@ -226,6 +238,46 @@ draw :: (s: *State) {
 	s.frame_number += 1;
 }
 
+draw_geometry :: (cmd: VkCommandBuffer, s: *State) {
+	attachmentInfo: VkRenderingAttachmentInfo;
+	attachmentInfo.imageView = s.drawImage.imageView;
+	attachmentInfo.imageLayout = .COLOR_ATTACHMENT_OPTIMAL;
+	attachmentInfo.loadOp = .LOAD;
+	attachmentInfo.storeOp = .STORE;
+
+	renderingInfo: VkRenderingInfo;
+	renderingInfo.renderArea.extent = s.drawExtent;
+	renderingInfo.layerCount = 1;
+	renderingInfo.colorAttachmentCount = 1;
+	renderingInfo.pColorAttachments = *attachmentInfo;
+
+	vkCmdBeginRendering(cmd, *renderingInfo);
+
+	vkCmdBindPipeline(cmd, .GRAPHICS, s.trianglePipeline);
+
+	viewport: VkViewport;
+	viewport.x = 0;
+	viewport.y = 0;
+	viewport.width = xx s.drawExtent.width;
+	viewport.height = xx s.drawExtent.height;
+	viewport.minDepth = 0.;
+	viewport.maxDepth = 1.;
+
+	vkCmdSetViewport(cmd, 0, 1, *viewport);
+
+	scissor: VkRect2D;
+	scissor.offset.x = 0;
+	scissor.offset.y = 0;
+	scissor.extent.width = s.drawExtent.width;
+	scissor.extent.height = s.drawExtent.height;
+
+	vkCmdSetScissor(cmd, 0, 1, *scissor);
+
+	vkCmdDraw(cmd, 3, 1, 0, 0);
+
+	vkCmdEndRendering(cmd);
+}
+
 init :: (s: *State) {
 	result_sdl := SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER);
 	if result_sdl != 0
@@ -248,6 +300,7 @@ init :: (s: *State) {
 	init_descriptors(s);
 	init_pipelines(s);
 	init_imgui(s);
+	init_triangle_pipeline(s);
 
 	s.pc.data1 = Vector4.{1, 0, 0, 1};
 	s.pc.data2 = Vector4.{0, 0, 1, 1};
@@ -688,6 +741,31 @@ init_imgui :: (s: *State) {
 	ImGui_ImplVulkan_CreateFontsTexture();
 }
 
+init_triangle_pipeline :: (using s: *State) {
+	VERT :: #run SHADER_GET("colored_triangle.vert");
+	vertShader := load_shader_module(VERT, device);
+	FRAG :: #run SHADER_GET("colored_triangle.frag");
+	fragShader := load_shader_module(FRAG, device);
+
+	trianglePipelineLayoutCreateInfo: VkPipelineLayoutCreateInfo;
+	vkCreatePipelineLayout(device, *trianglePipelineLayoutCreateInfo, null, *trianglePipelineLayout);
+
+	builder: PipelineBuilder;
+	builder.pipelineLayout = trianglePipelineLayout;
+	builder.inputAssembly.topology = .TRIANGLE_LIST;
+	builder.rasterizer.polygonMode = .FILL;
+	builder.rasterizer.cullMode = .NONE;
+	builder.rasterizer.frontFace = .CLOCKWISE;
+	builder.renderInfo.depthAttachmentFormat = .UNDEFINED;
+	builder_set_shaders(*builder, vertShader, fragShader);
+	builder_set_multisample_none(*builder);
+	builder_disable_blending(*builder);
+	builder_disable_depthtest(*builder);
+	builder_set_color_attachment_format(*builder, drawImage.imageFormat);
+
+	trianglePipeline = build_pipeline(*builder, s);
+}
+
 load_shader_module :: (bytes: []u8, device: VkDevice) -> VkShaderModule {
 	createInfo: VkShaderModuleCreateInfo;
 	createInfo.codeSize = xx bytes.count;
@@ -1091,7 +1169,6 @@ copy_image_to_image :: (cmd: VkCommandBuffer, source: VkImage, destination: VkIm
 
 	vkCmdBlitImage2(cmd, *blitInfo);
 }
-
 
 // createinfos
 
