@@ -33,6 +33,13 @@ AllocatedImage :: struct {
 	imageFormat: VkFormat;
 }
 
+ComputePushConstants :: struct {
+	data1: Vector4;
+	data2: Vector4;
+	data3: Vector4;
+	data4: Vector4;
+}
+
 FRAMES_OVERLAP :: 2;
 
 State :: struct {
@@ -69,6 +76,8 @@ State :: struct {
 	drawExtent: VkExtent2D;
 	frames: [..] FrameData;
 	frame_number: int;
+
+	pc: ComputePushConstants;
 }
 
 BuildType :: enum u8
@@ -106,7 +115,18 @@ main :: () {
 		ImGui_ImplVulkan_NewFrame();
 		ImGui_ImplSDL2_NewFrame();
 		ImGui.NewFrame();
-		ImGui.ShowDemoWindow();
+
+
+		// ImGui.ShowDemoWindow();
+
+		if ImGui.Begin("Background") {
+			ImGui.InputFloat4("data1", *state.pc.data1.component);
+			ImGui.InputFloat4("data2", *state.pc.data2.component);
+			ImGui.InputFloat4("data3", *state.pc.data3.component);
+			ImGui.InputFloat4("data4", *state.pc.data4.component);
+		}
+		ImGui.End();
+
 		ImGui.Render();
 
 		draw(*state);
@@ -154,6 +174,8 @@ draw :: (s: *State) {
 	// compute to draw our gradient
 	vkCmdBindPipeline(cmd, .COMPUTE, s.gradientPipeline);
 	vkCmdBindDescriptorSets(cmd, .COMPUTE, s.gradientPipelineLayout, 0, 1, *s.drawImageDescriptors, 0, null);
+
+	vkCmdPushConstants(cmd, s.gradientPipelineLayout, .COMPUTE_BIT, 0, size_of(ComputePushConstants), *s.pc);
 	vkCmdDispatch(cmd, xx ceil(s.drawExtent.width / 16.0), xx ceil(s.drawExtent.width / 16.0), 1);
 
 	// blit our frame onto the swapchain
@@ -226,6 +248,9 @@ init :: (s: *State) {
 	init_descriptors(s);
 	init_pipelines(s);
 	init_imgui(s);
+
+	s.pc.data1 = Vector4.{1, 0, 0, 1};
+	s.pc.data2 = Vector4.{0, 0, 1, 1};
 }
 
 init_vulkan :: (state: *State) -> bool {
@@ -571,6 +596,13 @@ init_background_pipelines :: (state: *State) {
 	computeLayout.pSetLayouts = *drawImageDescriptorLayout;
 	computeLayout.setLayoutCount = 1;
 
+	pushConstant: VkPushConstantRange;
+	pushConstant.offset = 0;
+	pushConstant.size = size_of(ComputePushConstants);
+	pushConstant.stageFlags = .COMPUTE_BIT;
+
+	computeLayout.pPushConstantRanges = *pushConstant;
+	computeLayout.pushConstantRangeCount = 1;
 	vkCreatePipelineLayout(device, *computeLayout, null, *gradientPipelineLayout);
 
 	// compile time load the shader binary
