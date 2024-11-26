@@ -34,11 +34,36 @@ AllocatedImage :: struct {
 	imageFormat: VkFormat;
 }
 
+AllocatedBuffer :: struct {
+	buffer: VkBuffer;
+	allocation: VmaAllocation;
+	info: VmaAllocationInfo;
+}
+
 ComputePushConstants :: struct {
 	data1: Vector4;
 	data2: Vector4;
 	data3: Vector4;
 	data4: Vector4;
+}
+
+Vertex :: struct {
+	position: Vector3;
+	uv_x: float;
+	normal: Vector3;
+	uv_y: float;
+	color: Vector4;
+}
+
+GpuMeshBuffers :: struct {
+	indexBuffer: AllocatedBuffer;
+	vertexBuffer: AllocatedBuffer;
+	deviceAddress: VkDeviceAddress;
+}
+
+GpuDrawPushConstants :: struct {
+	worldMatrix: Matrix4;
+	vertexBuffer: VkDeviceAddress;
 }
 
 FRAMES_OVERLAP :: 2;
@@ -73,6 +98,10 @@ State :: struct {
 
 	trianglePipeline: VkPipeline;
 	trianglePipelineLayout: VkPipelineLayout;
+
+	immediateFence: VkFence;
+	immediateCommandBuffer: VkCommandBuffer;
+	immediateCommandPool: VkCommandPool;
 
 	gpuAllocator: VmaAllocator;
 
@@ -567,14 +596,26 @@ init_commands :: (state: *State) {
 	using state;
 	
 	
-	command_pool_info := VkCommandPoolCreateInfo.{
+	commandPoolInfo := VkCommandPoolCreateInfo.{
 		flags = .RESET_COMMAND_BUFFER_BIT,
 		queueFamilyIndex = xx graphicsQueueFamily
 	};
 
+	result := vkCreateCommandPool(device, *commandPoolInfo, null, *immediateCommandPool);
+	assert(result == .SUCCESS, "Could not create immediate command pool.");
+
+	immediateCmdAllocInfo := VkCommandBufferAllocateInfo.{
+		commandPool = immediateCommandPool,
+		commandBufferCount = 1,
+		level = .PRIMARY
+	};
+
+	result = vkAllocateCommandBuffers(device, *immediateCmdAllocInfo, *immediateCommandBuffer);
+	assert(result == .SUCCESS, "Could not allocate immediate command buffer");
+
 	for frames
 	{
-		result := vkCreateCommandPool(device, *command_pool_info, null, *it.commandPool);
+		result = vkCreateCommandPool(device, *commandPoolInfo, null, *it.commandPool);
 		assert(result == .SUCCESS, "Could not create command pool.");
 	
 		cmd_alloc_info := VkCommandBufferAllocateInfo.{
@@ -590,17 +631,20 @@ init_commands :: (state: *State) {
 
 init_sync_structures :: (state: *State) {
 	using state;
-	
+
 	fence_create_info := VkFenceCreateInfo.{
 		flags = .SIGNALED_BIT
 	};
 	semaphore_create_info := VkSemaphoreCreateInfo.{
 		flags = 0
 	};
+
+	result := vkCreateFence(device, *fence_create_info, null, *immediateFence);
+	assert(result == .SUCCESS, "Could not create fence.");
 	
 	for frames
 	{
-		result := vkCreateFence(device, *fence_create_info, null, *it.renderFence);
+		result = vkCreateFence(device, *fence_create_info, null, *it.renderFence);
 		assert(result == .SUCCESS, "Could not create fence.");
 
 		result = vkCreateSemaphore(device, *semaphore_create_info, null, *it.swapchainSemaphore);
@@ -1168,6 +1212,93 @@ copy_image_to_image :: (cmd: VkCommandBuffer, source: VkImage, destination: VkIm
 	blitInfo.pRegions = *blitRegion;
 
 	vkCmdBlitImage2(cmd, *blitInfo);
+}
+
+create_buffer :: (s: *State, size: u64, usage: VkBufferUsageFlags, memoryUsage: VmaMemoryUsage) -> AllocatedBuffer {
+	info: VkBufferCreateInfo;
+	info.size = size;
+	info.usage = usage;
+
+	allocInfo: VmaAllocationCreateInfo;
+	allocInfo.usage = memoryUsage;
+	allocInfo.flags = .MAPPED_BIT;
+	newBuffer: AllocatedBuffer;
+	result := vmaCreateBuffer(s.gpuAllocator, *info, *allocInfo, *newBuffer.buffer, *newBuffer.allocation, *newBuffer.info);
+	assert(result == .SUCCESS, "Failed to allocate buffer");
+	return newBuffer;
+}
+
+destroy_buffer :: (s: *State, buffer: *AllocatedBuffer) {
+	vmaDestroyBuffer(s.gpuAllocator, buffer.buffer, buffer.allocation);
+}
+
+upload_mesh :: (s: *State, indices: []u32, vertices: []Vertex) -> GpuMeshBuffers {
+	vertexBufferSize := vertices.count * size_of(Vertex);
+	indexBufferSize := indices.count * size_of(u32);
+
+	mesh: GpuMeshBuffers;
+
+	mesh.vertexBuffer = create_buffer(s, xx vertexBufferSize, .STORAGE_BUFFER_BIT | .TRANSFER_DST_BIT | .SHADER_DEVICE_ADDRESS_BIT, .GPU_ONLY);
+
+	deviceAddressInfo: VkBufferDeviceAddressInfo;
+	deviceAddressInfo.buffer = mesh.vertexBuffer.buffer;
+	mesh.deviceAddress = vkGetBufferDeviceAddress(s.device, *deviceAddressInfo);
+
+	mesh.indexBuffer = create_buffer(s, xx indexBufferSize, .INDEX_BUFFER_BIT | .TRANSFER_DST_BIT, .GPU_ONLY);
+
+	// here's where the actual data upload happens
+	// it's doing a full immediate submit, should research how to do this better
+	staging := create_buffer(s, xx (vertexBufferSize + indexBufferSize), .TRANSFER_SRC_BIT, .CPU_ONLY);
+
+	data := staging.info.pMappedData;
+
+	memcpy(data, vertices.data, vertexBufferSize);
+	memcpy(cast(*u8)data + vertexBufferSize, indices.data, indexBufferSize);
+
+	begin_immediate_submit(s);
+
+	vertexCopy: VkBufferCopy;
+	vertexCopy.dstOffset = 0;
+	vertexCopy.srcOffset = 0;
+	vertexCopy.size = xx vertexBufferSize;
+	vkCmdCopyBuffer(s.immediateCommandBuffer, staging.buffer, mesh.vertexBuffer.buffer, 1, *vertexCopy);
+
+	indexCopy: VkBufferCopy;
+	indexCopy.dstOffset = 0;
+	indexCopy.srcOffset = 0;
+	indexCopy.size = xx indexBufferSize;
+	vkCmdCopyBuffer(s.immediateCommandBuffer, staging.buffer, mesh.indexBuffer.buffer, 1, *indexCopy);
+
+	end_immediate_submit(s);
+	return mesh;
+}
+
+begin_immediate_submit :: (using s: *State) {
+	result := vkResetFences(device, 1, *immediateFence);
+	assert(result == .SUCCESS, "Could not reset fence");
+
+	result = vkResetCommandPool(device, immediateCommandPool, 0);
+	assert(result == .SUCCESS, "Could not reset immediate command pool");
+	result = vkResetCommandBuffer(immediateCommandBuffer, 0);
+	assert(result == .SUCCESS, "Could not reset immediate command pool");
+
+	cmdBeginInfo := VkCommandBufferBeginInfo.{ flags = .ONE_TIME_SUBMIT_BIT };
+
+	result = vkBeginCommandBuffer(immediateCommandBuffer, *cmdBeginInfo);
+	assert(result == .SUCCESS, "Could not begin command buffer");
+}
+
+end_immediate_submit :: (using s: *State) {
+	result := vkEndCommandBuffer(immediateCommandBuffer);
+	assert(result == .SUCCESS, "failed to end command buffer");
+
+	cmdInfo := command_buffer_submit_info(immediateCommandBuffer);
+	submit := submit_info(*cmdInfo, null, null);
+	result = vkQueueSubmit2(graphicsQueue, 1, *submit, immediateFence);
+	assert(result == .SUCCESS, "Failed to submit immediate cmd buffer");
+
+	result = vkWaitForFences(device, 1, *immediateFence, VK_TRUE, 999999999);
+	assert(result == .SUCCESS, "Wait For fences failed");
 }
 
 // createinfos
