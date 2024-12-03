@@ -101,7 +101,7 @@ State :: struct {
 
 	meshPipeline: VkPipeline;
 	meshPipelineLayout: VkPipelineLayout;
-	rectangleMesh: GpuMeshBuffers;
+	cubeMesh: GpuMeshBuffers;
 
 	immediateFence: VkFence;
 	immediateCommandBuffer: VkCommandBuffer;
@@ -286,8 +286,6 @@ draw_geometry :: (cmd: VkCommandBuffer, s: *State) {
 
 	vkCmdBeginRendering(cmd, *renderingInfo);
 
-	// draw triangle
-	vkCmdBindPipeline(cmd, .GRAPHICS, s.trianglePipeline);
 
 	viewport: VkViewport;
 	viewport.x = 0;
@@ -307,19 +305,29 @@ draw_geometry :: (cmd: VkCommandBuffer, s: *State) {
 
 	vkCmdSetScissor(cmd, 0, 1, *scissor);
 
-	vkCmdDraw(cmd, 3, 1, 0, 0);
+	// draw triangle
+	// vkCmdBindPipeline(cmd, .GRAPHICS, s.trianglePipeline);
+	// vkCmdDraw(cmd, 3, 1, 0, 0);
 
-	// draw mesh rectangle
+	// draw mesh cube
 	vkCmdBindPipeline(cmd, .GRAPHICS, s.meshPipeline);
 
+	projection := make_projection_matrix(60.0 * PI / 180.0, cast(float)WIDTH/cast(float)HEIGHT, 1000.0, 0.0001, 0.0, 0.0, true);
+	// projection._11 *= -1; // @todo eh?
+	view := make_translation_matrix4(.{0.0, 0.0, -4.0});
+
+	rotation: Quaternion;
+	set_from_axis_and_angle(*rotation, .{0, 1, 0}, xx seconds_since_init() * 0.5);
+	model := rotation_matrix(Matrix4, rotation);
+
 	pushConstants: GpuDrawPushConstants;
-	pushConstants.worldMatrix = Matrix4_Identity;
-	pushConstants.vertexBuffer = s.rectangleMesh.deviceAddress;
+	pushConstants.worldMatrix = transpose(projection * view * model);
+	pushConstants.vertexBuffer = s.cubeMesh.deviceAddress;
 
 	vkCmdPushConstants(cmd, s.meshPipelineLayout, .VERTEX_BIT, 0, size_of(GpuDrawPushConstants), *pushConstants);
-	vkCmdBindIndexBuffer(cmd, s.rectangleMesh.indexBuffer.buffer, 0, .UINT32);
+	vkCmdBindIndexBuffer(cmd, s.cubeMesh.indexBuffer.buffer, 0, .UINT32);
 
-	vkCmdDrawIndexed(cmd, 6, 1, 0, 0, 0);
+	vkCmdDrawIndexed(cmd, 36, 1, 0, 0, 0);
 
 	vkCmdEndRendering(cmd);
 }
@@ -348,7 +356,7 @@ init :: (s: *State) {
 	init_imgui(s);
 	init_triangle_pipeline(s);
 	init_mesh_pipeline(s);
-	init_rectangle_mesh(s);
+	init_cube_mesh(s);
 
 	s.pc.data1 = Vector4.{1, 0, 0, 1};
 	s.pc.data2 = Vector4.{0, 0, 1, 1};
@@ -853,6 +861,7 @@ init_mesh_pipeline :: (using s: *State) {
 	builder.rasterizer.cullMode = .NONE;
 	builder.rasterizer.frontFace = .CLOCKWISE;
 	builder.renderInfo.depthAttachmentFormat = .UNDEFINED;
+	builder.rasterizer.depthClampEnable = VK_TRUE;
 	builder_set_shaders(*builder, vertShader, fragShader);
 	builder_set_multisample_none(*builder);
 	builder_disable_blending(*builder);
@@ -862,30 +871,56 @@ init_mesh_pipeline :: (using s: *State) {
 	meshPipeline = build_pipeline(*builder, s);
 }
 
-init_rectangle_mesh :: (using s: *State) {
-	rectVerts : [4]Vertex;
+init_cube_mesh :: (using s: *State) {
+	cubeVerts : [8]Vertex;
 	
-	rectVerts[0].position = .{0.5, -0.5, 0};
-	rectVerts[1].position = .{0.5, 0.5, 0};
-	rectVerts[2].position = .{-0.5, -0.5, 0};
-	rectVerts[3].position = .{-0.5, 0.5, 0};
+	// front side
+	cubeVerts[0].position = .{-0.5, -0.5, 0.5};
+	cubeVerts[1].position = .{0.5, -0.5, 0.5};
+	cubeVerts[2].position = .{-0.5, 0.5, 0.5};
+	cubeVerts[3].position = .{0.5, 0.5, 0.5};
+	// back side
+	cubeVerts[4].position = .{-0.5, -0.5, -0.5};
+	cubeVerts[5].position = .{0.5, -0.5, -0.5};
+	cubeVerts[6].position = .{-0.5, 0.5, -0.5};
+	cubeVerts[7].position = .{0.5, 0.5, -0.5};
 
-	rectVerts[0].color = .{0, 0, 0, 1};
-	rectVerts[1].color = .{0.5, 0.5, 0.5, 1};
-	rectVerts[2].color = .{1, 0, 0, 1};
-	rectVerts[3].color = .{0, 1, 0, 1};
+	cubeVerts[0].color = .{0, 0, 0, 1};
+	cubeVerts[1].color = .{0.5, 0.5, 0.5, 1};
+	cubeVerts[2].color = .{1, 0, 0, 1};
+	cubeVerts[3].color = .{0, 1, 0, 1};
+	cubeVerts[4].color = .{0, 0, 0, 1};
+	cubeVerts[5].color = .{0.5, 0.5, 0.5, 1};
+	cubeVerts[6].color = .{1, 0, 0, 1};
+	cubeVerts[7].color = .{0, 1, 0, 1};
 
-	rectIndices : [6]u32;
+	cubeIndices : []u32 = .[
+		//Top
+        2, 6, 7,
+        2, 3, 7,
 
-	rectIndices[0] = 0;
-	rectIndices[1] = 1;
-	rectIndices[2] = 2;
+        //Bottom
+        0, 4, 5,
+        0, 1, 5,
 
-	rectIndices[3] = 2;
-	rectIndices[4] = 1;
-	rectIndices[5] = 3;
+        //Left
+        0, 2, 6,
+        0, 4, 6,
 
-	rectangleMesh = upload_mesh(s, rectIndices, rectVerts);
+        //Right
+        1, 3, 7,
+        1, 5, 7,
+
+        //Front
+        0, 2, 3,
+        0, 1, 3,
+
+        //Back
+        4, 6, 7,
+        4, 5, 7
+	];
+
+	cubeMesh = upload_mesh(s, cubeIndices, cubeVerts);
 }
 
 load_shader_module :: (bytes: []u8, device: VkDevice) -> VkShaderModule {
