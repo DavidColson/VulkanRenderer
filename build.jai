@@ -38,6 +38,7 @@ build :: ()
 	build_shader("shaders/gradient.comp", ".build/gradient.comp.bin");
 	build_shader("shaders/imgui.frag", ".build/imgui.frag.bin");
 	build_shader("shaders/imgui.vert", ".build/imgui.vert.bin");
+	build_shader("shaders/colored_triangle_mesh.vert", ".build/colored_triangle_mesh.vert.bin");
 	build_shader("shaders/colored_triangle.vert", ".build/colored_triangle.vert.bin");
 	build_shader("shaders/colored_triangle.frag", ".build/colored_triangle.frag.bin");
 

@@ -99,6 +99,10 @@ State :: struct {
 	trianglePipeline: VkPipeline;
 	trianglePipelineLayout: VkPipelineLayout;
 
+	meshPipeline: VkPipeline;
+	meshPipelineLayout: VkPipelineLayout;
+	rectangleMesh: GpuMeshBuffers;
+
 	immediateFence: VkFence;
 	immediateCommandBuffer: VkCommandBuffer;
 	immediateCommandPool: VkCommandPool;
@@ -282,6 +286,7 @@ draw_geometry :: (cmd: VkCommandBuffer, s: *State) {
 
 	vkCmdBeginRendering(cmd, *renderingInfo);
 
+	// draw triangle
 	vkCmdBindPipeline(cmd, .GRAPHICS, s.trianglePipeline);
 
 	viewport: VkViewport;
@@ -303,6 +308,18 @@ draw_geometry :: (cmd: VkCommandBuffer, s: *State) {
 	vkCmdSetScissor(cmd, 0, 1, *scissor);
 
 	vkCmdDraw(cmd, 3, 1, 0, 0);
+
+	// draw mesh rectangle
+	vkCmdBindPipeline(cmd, .GRAPHICS, s.meshPipeline);
+
+	pushConstants: GpuDrawPushConstants;
+	pushConstants.worldMatrix = Matrix4_Identity;
+	pushConstants.vertexBuffer = s.rectangleMesh.deviceAddress;
+
+	vkCmdPushConstants(cmd, s.meshPipelineLayout, .VERTEX_BIT, 0, size_of(GpuDrawPushConstants), *pushConstants);
+	vkCmdBindIndexBuffer(cmd, s.rectangleMesh.indexBuffer.buffer, 0, .UINT32);
+
+	vkCmdDrawIndexed(cmd, 6, 1, 0, 0, 0);
 
 	vkCmdEndRendering(cmd);
 }
@@ -330,6 +347,8 @@ init :: (s: *State) {
 	init_pipelines(s);
 	init_imgui(s);
 	init_triangle_pipeline(s);
+	init_mesh_pipeline(s);
+	init_rectangle_mesh(s);
 
 	s.pc.data1 = Vector4.{1, 0, 0, 1};
 	s.pc.data2 = Vector4.{0, 0, 1, 1};
@@ -810,6 +829,65 @@ init_triangle_pipeline :: (using s: *State) {
 	trianglePipeline = build_pipeline(*builder, s);
 }
 
+init_mesh_pipeline :: (using s: *State) {
+	VERT :: #run SHADER_GET("colored_triangle_mesh.vert");
+	vertShader := load_shader_module(VERT, device);
+	// @todo this is duplicated above, something to improve
+	FRAG :: #run SHADER_GET("colored_triangle.frag");
+	fragShader := load_shader_module(FRAG, device);
+
+	pushConstant: VkPushConstantRange;
+	pushConstant.offset = 0;
+	pushConstant.size = size_of(GpuDrawPushConstants);
+	pushConstant.stageFlags = .VERTEX_BIT;
+
+	meshPipelineLayoutCreateInfo: VkPipelineLayoutCreateInfo;
+	meshPipelineLayoutCreateInfo.pPushConstantRanges = *pushConstant;
+	meshPipelineLayoutCreateInfo.pushConstantRangeCount = 1;
+	vkCreatePipelineLayout(device, *meshPipelineLayoutCreateInfo, null, *meshPipelineLayout);
+
+	builder: PipelineBuilder;
+	builder.pipelineLayout = meshPipelineLayout;
+	builder.inputAssembly.topology = .TRIANGLE_LIST;
+	builder.rasterizer.polygonMode = .FILL;
+	builder.rasterizer.cullMode = .NONE;
+	builder.rasterizer.frontFace = .CLOCKWISE;
+	builder.renderInfo.depthAttachmentFormat = .UNDEFINED;
+	builder_set_shaders(*builder, vertShader, fragShader);
+	builder_set_multisample_none(*builder);
+	builder_disable_blending(*builder);
+	builder_disable_depthtest(*builder);
+	builder_set_color_attachment_format(*builder, drawImage.imageFormat);
+
+	meshPipeline = build_pipeline(*builder, s);
+}
+
+init_rectangle_mesh :: (using s: *State) {
+	rectVerts : [4]Vertex;
+	
+	rectVerts[0].position = .{0.5, -0.5, 0};
+	rectVerts[1].position = .{0.5, 0.5, 0};
+	rectVerts[2].position = .{-0.5, -0.5, 0};
+	rectVerts[3].position = .{-0.5, 0.5, 0};
+
+	rectVerts[0].color = .{0, 0, 0, 1};
+	rectVerts[1].color = .{0.5, 0.5, 0.5, 1};
+	rectVerts[2].color = .{1, 0, 0, 1};
+	rectVerts[3].color = .{0, 1, 0, 1};
+
+	rectIndices : [6]u32;
+
+	rectIndices[0] = 0;
+	rectIndices[1] = 1;
+	rectIndices[2] = 2;
+
+	rectIndices[3] = 2;
+	rectIndices[4] = 1;
+	rectIndices[5] = 3;
+
+	rectangleMesh = upload_mesh(s, rectIndices, rectVerts);
+}
+
 load_shader_module :: (bytes: []u8, device: VkDevice) -> VkShaderModule {
 	createInfo: VkShaderModuleCreateInfo;
 	createInfo.codeSize = xx bytes.count;
@@ -1265,7 +1343,7 @@ upload_mesh :: (s: *State, indices: []u32, vertices: []Vertex) -> GpuMeshBuffers
 
 	indexCopy: VkBufferCopy;
 	indexCopy.dstOffset = 0;
-	indexCopy.srcOffset = 0;
+	indexCopy.srcOffset = xx vertexBufferSize;
 	indexCopy.size = xx indexBufferSize;
 	vkCmdCopyBuffer(s.immediateCommandBuffer, staging.buffer, mesh.indexBuffer.buffer, 1, *indexCopy);
 
@@ -1276,9 +1354,6 @@ upload_mesh :: (s: *State, indices: []u32, vertices: []Vertex) -> GpuMeshBuffers
 begin_immediate_submit :: (using s: *State) {
 	result := vkResetFences(device, 1, *immediateFence);
 	assert(result == .SUCCESS, "Could not reset fence");
-
-	result = vkResetCommandPool(device, immediateCommandPool, 0);
-	assert(result == .SUCCESS, "Could not reset immediate command pool");
 	result = vkResetCommandBuffer(immediateCommandBuffer, 0);
 	assert(result == .SUCCESS, "Could not reset immediate command pool");
 
@@ -1297,7 +1372,8 @@ end_immediate_submit :: (using s: *State) {
 	result = vkQueueSubmit2(graphicsQueue, 1, *submit, immediateFence);
 	assert(result == .SUCCESS, "Failed to submit immediate cmd buffer");
 
-	result = vkWaitForFences(device, 1, *immediateFence, VK_TRUE, 999999999);
+	// takes absolutely ages, blocks use of the queue!!
+	result = vkWaitForFences(device, 1, *immediateFence, VK_TRUE, 999999999999999999);
 	assert(result == .SUCCESS, "Wait For fences failed");
 }
 
