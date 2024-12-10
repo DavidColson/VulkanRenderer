@@ -88,16 +88,18 @@ builder_set_color_attachment_format :: (using builder: *PipelineBuilder, format:
 	renderInfo.pColorAttachmentFormats = *colorAttachmentFormat;
 }
 
-builder_disable_depthtest :: (using builder: *PipelineBuilder) {
-	depthStencil.depthTestEnable = VK_FALSE;
-	depthStencil.depthWriteEnable = VK_FALSE;
-	depthStencil.depthCompareOp = .NEVER;
+builder_set_depth_attachment_format :: (using builder: *PipelineBuilder, format: VkFormat) {
+	renderInfo.depthAttachmentFormat = format;
+}
+
+builder_enable_depthtest :: (using builder: *PipelineBuilder, depthWriteEnable: bool, op: VkCompareOp) {
+	depthStencil.depthTestEnable = VK_TRUE;
+	depthStencil.depthWriteEnable = cast(VkBool32) depthWriteEnable;
+	depthStencil.depthCompareOp = op;
 	depthStencil.depthBoundsTestEnable = VK_FALSE;
 	depthStencil.stencilTestEnable = VK_FALSE;
-	depthStencil.front = VkStencilOpState.{};
-	depthStencil.back = VkStencilOpState.{};
+	depthStencil.front = .{};
+	depthStencil.back = .{};
 	depthStencil.minDepthBounds = 0.0;
 	depthStencil.maxDepthBounds = 1.0;
 }
-
-

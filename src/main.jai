@@ -110,6 +110,7 @@ State :: struct {
 	gpuAllocator: VmaAllocator;
 
 	drawImage: AllocatedImage;
+	depthImage: AllocatedImage;
 	drawExtent: VkExtent2D;
 	frames: [..] FrameData;
 	frame_number: int;
@@ -156,13 +157,13 @@ main :: () {
 
 		// ImGui.ShowDemoWindow();
 
-		if ImGui.Begin("Background") {
-			ImGui.InputFloat4("data1", *state.pc.data1.component);
-			ImGui.InputFloat4("data2", *state.pc.data2.component);
-			ImGui.InputFloat4("data3", *state.pc.data3.component);
-			ImGui.InputFloat4("data4", *state.pc.data4.component);
-		}
-		ImGui.End();
+		// if ImGui.Begin("Background") {
+		// 	ImGui.InputFloat4("data1", *state.pc.data1.component);
+		// 	ImGui.InputFloat4("data2", *state.pc.data2.component);
+		// 	ImGui.InputFloat4("data3", *state.pc.data3.component);
+		// 	ImGui.InputFloat4("data4", *state.pc.data4.component);
+		// }
+		// ImGui.End();
 
 		ImGui.Render();
 
@@ -220,6 +221,7 @@ draw :: (s: *State) {
 
 
 	transition_image(cmd, s.drawImage.image, .GENERAL, .COLOR_ATTACHMENT_OPTIMAL);
+	transition_image(cmd, s.depthImage.image, .UNDEFINED, .DEPTH_ATTACHMENT_OPTIMAL);
 
 	draw_geometry(cmd, s);
 
@@ -272,17 +274,24 @@ draw :: (s: *State) {
 }
 
 draw_geometry :: (cmd: VkCommandBuffer, s: *State) {
-	attachmentInfo: VkRenderingAttachmentInfo;
-	attachmentInfo.imageView = s.drawImage.imageView;
-	attachmentInfo.imageLayout = .COLOR_ATTACHMENT_OPTIMAL;
-	attachmentInfo.loadOp = .LOAD;
-	attachmentInfo.storeOp = .STORE;
+	colorAttachment: VkRenderingAttachmentInfo;
+	colorAttachment.imageView = s.drawImage.imageView;
+	colorAttachment.imageLayout = .COLOR_ATTACHMENT_OPTIMAL;
+	colorAttachment.loadOp = .LOAD;
+	colorAttachment.storeOp = .STORE;
+	depthAttachment: VkRenderingAttachmentInfo;
+	depthAttachment.imageView = s.depthImage.imageView;
+	depthAttachment.imageLayout = .DEPTH_ATTACHMENT_OPTIMAL;
+	depthAttachment.loadOp = .CLEAR;
+	depthAttachment.storeOp = .STORE;
+	depthAttachment.clearValue.depthStencil.depth = 0;
 
 	renderingInfo: VkRenderingInfo;
 	renderingInfo.renderArea.extent = s.drawExtent;
 	renderingInfo.layerCount = 1;
 	renderingInfo.colorAttachmentCount = 1;
-	renderingInfo.pColorAttachments = *attachmentInfo;
+	renderingInfo.pColorAttachments = *colorAttachment;
+	renderingInfo.pDepthAttachment = *depthAttachment;
 
 	vkCmdBeginRendering(cmd, *renderingInfo);
 
@@ -312,14 +321,15 @@ draw_geometry :: (cmd: VkCommandBuffer, s: *State) {
 	// draw mesh cube
 	vkCmdBindPipeline(cmd, .GRAPHICS, s.meshPipeline);
 
-	projection := make_projection_matrix(60.0 * PI / 180.0, cast(float)WIDTH/cast(float)HEIGHT, 1000.0, 0.0001, 0.0, 0.0, true);
-	// projection._11 *= -1; // @todo eh?
+	projection := make_projection_matrix(60.0 * PI / 180.0, cast(float)WIDTH/cast(float)HEIGHT, 1000.0, 0.01, 0.0, 0.0, true);
+	projection._11 *= -1; // @todo eh?
 	view := make_translation_matrix4(.{0.0, 0.0, -4.0});
 
 	rotation: Quaternion;
 	set_from_axis_and_angle(*rotation, .{0, 1, 0}, xx seconds_since_init() * 0.5);
 	model := rotation_matrix(Matrix4, rotation);
 
+	// beware, jai matrixes are row-major (designed for hlsl)
 	pushConstants: GpuDrawPushConstants;
 	pushConstants.worldMatrix = transpose(projection * view * model);
 	pushConstants.vertexBuffer = s.cubeMesh.deviceAddress;
@@ -572,26 +582,49 @@ init_swapchain :: (state: *State) {
 	
 	array_resize(*frames, image_count);
 
-	drawImage.imageExtent = VkExtent3D.{width = WIDTH, height = HEIGHT, depth=1};
-	drawImage.imageFormat = .R16G16B16A16_SFLOAT; 
+	// init draw image
+	{
+		drawImage.imageExtent = VkExtent3D.{width = WIDTH, height = HEIGHT, depth=1};
+		drawImage.imageFormat = .R16G16B16A16_SFLOAT; 
 
-	drawImageUsageFlags : VkImageUsageFlags;
-	drawImageUsageFlags |= .VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-	drawImageUsageFlags |= .VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-	drawImageUsageFlags |= .VK_IMAGE_USAGE_STORAGE_BIT;
-	drawImageUsageFlags |= .VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+		drawImageUsageFlags : VkImageUsageFlags;
+		drawImageUsageFlags |= .TRANSFER_SRC_BIT;
+		drawImageUsageFlags |= .TRANSFER_DST_BIT;
+		drawImageUsageFlags |= .STORAGE_BIT;
+		drawImageUsageFlags |= .COLOR_ATTACHMENT_BIT;
 
-	imageInfo := image_create_info(drawImage.imageFormat, drawImageUsageFlags, drawImage.imageExtent);
+		imageInfo := image_create_info(drawImage.imageFormat, drawImageUsageFlags, drawImage.imageExtent);
 
-	imgAllocInfo: VmaAllocationCreateInfo;
-	imgAllocInfo.usage = .GPU_ONLY;
-	imgAllocInfo.requiredFlags = .DEVICE_LOCAL_BIT;
+		imgAllocInfo: VmaAllocationCreateInfo;
+		imgAllocInfo.usage = .GPU_ONLY;
+		imgAllocInfo.requiredFlags = .DEVICE_LOCAL_BIT;
 
-	vmaCreateImage(gpuAllocator, *imageInfo, *imgAllocInfo, *drawImage.image, *drawImage.allocation, null);
+		vmaCreateImage(gpuAllocator, *imageInfo, *imgAllocInfo, *drawImage.image, *drawImage.allocation, null);
 
-	imageViewInfo := image_view_create_info(drawImage.imageFormat, drawImage.image, .VK_IMAGE_ASPECT_COLOR_BIT);
+		imageViewInfo := image_view_create_info(drawImage.imageFormat, drawImage.image, .COLOR_BIT);
 
-	vkCreateImageView(device, *imageViewInfo, null, *drawImage.imageView);
+		vkCreateImageView(device, *imageViewInfo, null, *drawImage.imageView);
+	}
+
+	// init depth
+	{
+		depthImage.imageFormat = .D32_SFLOAT;
+		depthImage.imageExtent = drawImage.imageExtent;
+
+		depthImageUsage: VkImageUsageFlags;
+		depthImageUsage |= .DEPTH_STENCIL_ATTACHMENT_BIT;
+
+		imageInfo := image_create_info(depthImage.imageFormat, depthImageUsage, depthImage.imageExtent);
+		imgAllocInfo: VmaAllocationCreateInfo;
+		imgAllocInfo.usage = .GPU_ONLY;
+		imgAllocInfo.requiredFlags = .DEVICE_LOCAL_BIT;
+
+		vmaCreateImage(gpuAllocator, *imageInfo, *imgAllocInfo, *depthImage.image, *depthImage.allocation, null);
+
+		imageViewInfo := image_view_create_info(depthImage.imageFormat, depthImage.image, .DEPTH_BIT);
+
+		vkCreateImageView(device, *imageViewInfo, null, *depthImage.imageView);
+	}
 }
 
 init_swapchain_image_views :: (state: *State) {
@@ -831,8 +864,9 @@ init_triangle_pipeline :: (using s: *State) {
 	builder_set_shaders(*builder, vertShader, fragShader);
 	builder_set_multisample_none(*builder);
 	builder_disable_blending(*builder);
-	builder_disable_depthtest(*builder);
+	builder_enable_depthtest(*builder, false, .NEVER);
 	builder_set_color_attachment_format(*builder, drawImage.imageFormat);
+	builder_set_depth_attachment_format(*builder, depthImage.imageFormat);
 
 	trianglePipeline = build_pipeline(*builder, s);
 }
@@ -865,8 +899,9 @@ init_mesh_pipeline :: (using s: *State) {
 	builder_set_shaders(*builder, vertShader, fragShader);
 	builder_set_multisample_none(*builder);
 	builder_disable_blending(*builder);
-	builder_disable_depthtest(*builder);
+	builder_enable_depthtest(*builder, true, .GREATER_OR_EQUAL);
 	builder_set_color_attachment_format(*builder, drawImage.imageFormat);
+	builder_set_depth_attachment_format(*builder, depthImage.imageFormat);
 
 	meshPipeline = build_pipeline(*builder, s);
 }
