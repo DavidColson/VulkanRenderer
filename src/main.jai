@@ -6,6 +6,7 @@
 #import "Print_Color";
 #import "String";
 #import "Math";
+#import "stb_image";
 
 #load "descriptors.jai";
 #load "pipeline_builder.jai";
@@ -102,6 +103,10 @@ State :: struct {
 	meshPipeline: VkPipeline;
 	meshPipelineLayout: VkPipelineLayout;
 	cubeMesh: GpuMeshBuffers;
+	crateTexture: AllocatedImage;
+	linearSampler: VkSampler;
+	textureDescriptorSetLayout: VkDescriptorSetLayout;
+	textureDescriptorSet: VkDescriptorSet;
 
 	immediateFence: VkFence;
 	immediateCommandBuffer: VkCommandBuffer;
@@ -320,6 +325,7 @@ draw_geometry :: (cmd: VkCommandBuffer, s: *State) {
 
 	// draw mesh cube
 	vkCmdBindPipeline(cmd, .GRAPHICS, s.meshPipeline);
+	vkCmdBindDescriptorSets(cmd, .GRAPHICS, s.meshPipelineLayout, 0, 1, *s.textureDescriptorSet, 0, null);
 
 	projection := make_projection_matrix(60.0 * PI / 180.0, cast(float)WIDTH/cast(float)HEIGHT, 1000.0, 0.01, 0.0, 0.0, true);
 	projection._11 *= -1; // @todo eh?
@@ -364,7 +370,7 @@ init :: (s: *State) {
 	init_descriptors(s);
 	init_pipelines(s);
 	init_imgui(s);
-	init_triangle_pipeline(s);
+	// init_triangle_pipeline(s);
 	init_mesh_pipeline(s);
 	init_cube_mesh(s);
 
@@ -583,48 +589,17 @@ init_swapchain :: (state: *State) {
 	array_resize(*frames, image_count);
 
 	// init draw image
-	{
-		drawImage.imageExtent = VkExtent3D.{width = WIDTH, height = HEIGHT, depth=1};
-		drawImage.imageFormat = .R16G16B16A16_SFLOAT; 
-
-		drawImageUsageFlags : VkImageUsageFlags;
-		drawImageUsageFlags |= .TRANSFER_SRC_BIT;
-		drawImageUsageFlags |= .TRANSFER_DST_BIT;
-		drawImageUsageFlags |= .STORAGE_BIT;
-		drawImageUsageFlags |= .COLOR_ATTACHMENT_BIT;
-
-		imageInfo := image_create_info(drawImage.imageFormat, drawImageUsageFlags, drawImage.imageExtent);
-
-		imgAllocInfo: VmaAllocationCreateInfo;
-		imgAllocInfo.usage = .GPU_ONLY;
-		imgAllocInfo.requiredFlags = .DEVICE_LOCAL_BIT;
-
-		vmaCreateImage(gpuAllocator, *imageInfo, *imgAllocInfo, *drawImage.image, *drawImage.allocation, null);
-
-		imageViewInfo := image_view_create_info(drawImage.imageFormat, drawImage.image, .COLOR_BIT);
-
-		vkCreateImageView(device, *imageViewInfo, null, *drawImage.imageView);
-	}
+	drawImageUsageFlags : VkImageUsageFlags;
+	drawImageUsageFlags |= .TRANSFER_SRC_BIT;
+	drawImageUsageFlags |= .TRANSFER_DST_BIT;
+	drawImageUsageFlags |= .STORAGE_BIT;
+	drawImageUsageFlags |= .COLOR_ATTACHMENT_BIT;
+	drawImage = create_image(state, VkExtent3D.{width = WIDTH, height = HEIGHT, depth=1}, .R16G16B16A16_SFLOAT, drawImageUsageFlags);
 
 	// init depth
-	{
-		depthImage.imageFormat = .D32_SFLOAT;
-		depthImage.imageExtent = drawImage.imageExtent;
-
-		depthImageUsage: VkImageUsageFlags;
-		depthImageUsage |= .DEPTH_STENCIL_ATTACHMENT_BIT;
-
-		imageInfo := image_create_info(depthImage.imageFormat, depthImageUsage, depthImage.imageExtent);
-		imgAllocInfo: VmaAllocationCreateInfo;
-		imgAllocInfo.usage = .GPU_ONLY;
-		imgAllocInfo.requiredFlags = .DEVICE_LOCAL_BIT;
-
-		vmaCreateImage(gpuAllocator, *imageInfo, *imgAllocInfo, *depthImage.image, *depthImage.allocation, null);
-
-		imageViewInfo := image_view_create_info(depthImage.imageFormat, depthImage.image, .DEPTH_BIT);
-
-		vkCreateImageView(device, *imageViewInfo, null, *depthImage.imageView);
-	}
+	depthImageUsage: VkImageUsageFlags;
+	depthImageUsage |= .DEPTH_STENCIL_ATTACHMENT_BIT;
+	depthImage = create_image(state, drawImage.imageExtent, .D32_SFLOAT, depthImageUsage);
 }
 
 init_swapchain_image_views :: (state: *State) {
@@ -718,29 +693,31 @@ init_sync_structures :: (state: *State) {
 init_descriptors :: (state: *State) {
 	using state;
 
-	sizes := PoolSizeRatio.[.{ .STORAGE_IMAGE, 1 }];
+
+	sizes := PoolSizeRatio.[.{ .STORAGE_IMAGE, 1 }, .{ .COMBINED_IMAGE_SAMPLER, 1}];
 
 	globalDescriptorAllocator = init_pool(device, 10, sizes);
 	
+	// draw image descriptors setup
 	{
 		builder: DescriptorLayoutBuilder;
 		add_binding_to_builder(*builder, 0, .STORAGE_IMAGE);
 		drawImageDescriptorLayout = build_descriptor_layout(*builder, device, .COMPUTE_BIT);
+
+		drawImageDescriptors = allocate_descriptor_set(*globalDescriptorAllocator, device, drawImageDescriptorLayout);
+
+		imgInfo: VkDescriptorImageInfo;
+		imgInfo.imageLayout = .GENERAL;
+		imgInfo.imageView = drawImage.imageView;
+
+		drawImageWrite: VkWriteDescriptorSet;
+		drawImageWrite.dstSet = drawImageDescriptors;
+		drawImageWrite.descriptorCount = 1;
+		drawImageWrite.descriptorType = .STORAGE_IMAGE;
+		drawImageWrite.pImageInfo = *imgInfo;
+
+		vkUpdateDescriptorSets(device, 1, *drawImageWrite, 0, null);
 	}
-
-	drawImageDescriptors = allocate_descriptor_set(*globalDescriptorAllocator, device, drawImageDescriptorLayout);
-
-	imgInfo: VkDescriptorImageInfo;
-	imgInfo.imageLayout = .GENERAL;
-	imgInfo.imageView = drawImage.imageView;
-
-	drawImageWrite: VkWriteDescriptorSet;
-	drawImageWrite.dstSet = drawImageDescriptors;
-	drawImageWrite.descriptorCount = 1;
-	drawImageWrite.descriptorType = .STORAGE_IMAGE;
-	drawImageWrite.pImageInfo = *imgInfo;
-
-	vkUpdateDescriptorSets(device, 1, *drawImageWrite, 0, null);
 }
 
 init_pipelines :: (state: *State) {
@@ -872,6 +849,40 @@ init_triangle_pipeline :: (using s: *State) {
 }
 
 init_mesh_pipeline :: (using s: *State) {
+	// load the texture for the cube
+	{
+		x, y: s32;
+		comp: s32;
+		imageData: *u8 = stbi_load("crate.png", *x, *y, *comp, 4);
+
+		crateTexture = create_image(s, imageData, VkExtent3D.{width = xx x, height = xx y, depth=1}, .R8G8B8A8_UNORM, .SAMPLED_BIT);
+	}
+
+	samplerInfo := VkSamplerCreateInfo.{magFilter = .LINEAR, minFilter= .LINEAR};
+	vkCreateSampler(device, *samplerInfo, null, *linearSampler);
+
+	// crate texture descriptor setup
+	{
+		builder: DescriptorLayoutBuilder;
+		add_binding_to_builder(*builder, 0, .COMBINED_IMAGE_SAMPLER);
+		textureDescriptorSetLayout = build_descriptor_layout(*builder, device, .FRAGMENT_BIT);
+
+		textureDescriptorSet = allocate_descriptor_set(*globalDescriptorAllocator, device, textureDescriptorSetLayout);
+
+		imgInfo: VkDescriptorImageInfo;
+		imgInfo.imageLayout = .SHADER_READ_ONLY_OPTIMAL;
+		imgInfo.imageView = crateTexture.imageView;
+		imgInfo.sampler = linearSampler;
+
+		imageWrite: VkWriteDescriptorSet;
+		imageWrite.dstSet = textureDescriptorSet;
+		imageWrite.descriptorCount = 1;
+		imageWrite.descriptorType = .COMBINED_IMAGE_SAMPLER;
+		imageWrite.pImageInfo = *imgInfo;
+
+		vkUpdateDescriptorSets(device, 1, *imageWrite, 0, null);
+	}
+
 	VERT :: #run SHADER_GET("colored_triangle_mesh.vert");
 	vertShader := load_shader_module(VERT, device);
 	// @todo this is duplicated above, something to improve
@@ -883,9 +894,13 @@ init_mesh_pipeline :: (using s: *State) {
 	pushConstant.size = size_of(GpuDrawPushConstants);
 	pushConstant.stageFlags = .VERTEX_BIT;
 
+	// @todo: set our descriptor set layout here for passing an image to the shader
 	meshPipelineLayoutCreateInfo: VkPipelineLayoutCreateInfo;
 	meshPipelineLayoutCreateInfo.pPushConstantRanges = *pushConstant;
 	meshPipelineLayoutCreateInfo.pushConstantRangeCount = 1;
+	meshPipelineLayoutCreateInfo.pSetLayouts = *textureDescriptorSetLayout;
+	meshPipelineLayoutCreateInfo.setLayoutCount = 1;
+
 	vkCreatePipelineLayout(device, *meshPipelineLayoutCreateInfo, null, *meshPipelineLayout);
 
 	builder: PipelineBuilder;
@@ -911,14 +926,31 @@ init_cube_mesh :: (using s: *State) {
 	
 	// front side
 	cubeVerts[0].position = .{-0.5, -0.5, 0.5};
+	cubeVerts[0].uv_x = 0.0;
+	cubeVerts[0].uv_y = 0.0;
 	cubeVerts[1].position = .{0.5, -0.5, 0.5};
+	cubeVerts[1].uv_x = 1.0;
+	cubeVerts[1].uv_y = 0.0;
 	cubeVerts[2].position = .{-0.5, 0.5, 0.5};
+	cubeVerts[2].uv_x = 0.0;
+	cubeVerts[2].uv_y = 1.0;
 	cubeVerts[3].position = .{0.5, 0.5, 0.5};
+	cubeVerts[3].uv_x = 1.0;
+	cubeVerts[3].uv_y = 1.0;
+
 	// back side
 	cubeVerts[4].position = .{-0.5, -0.5, -0.5};
+	cubeVerts[4].uv_x = 1.0;
+	cubeVerts[4].uv_y = 0.0;
 	cubeVerts[5].position = .{0.5, -0.5, -0.5};
+	cubeVerts[5].uv_x = 0.0;
+	cubeVerts[5].uv_y = 0.0;
 	cubeVerts[6].position = .{-0.5, 0.5, -0.5};
+	cubeVerts[6].uv_x = 1.0;
+	cubeVerts[6].uv_y = 1.0;
 	cubeVerts[7].position = .{0.5, 0.5, -0.5};
+	cubeVerts[7].uv_x = 0.0;
+	cubeVerts[7].uv_y = 1.0;
 
 	cubeVerts[0].color = .{0, 0, 0, 1};
 	cubeVerts[1].color = .{0.5, 0.5, 0.5, 1};
@@ -1419,6 +1451,59 @@ upload_mesh :: (s: *State, indices: []u32, vertices: []Vertex) -> GpuMeshBuffers
 
 	end_immediate_submit(s);
 	return mesh;
+}
+
+create_image :: (using s: *State, size: VkExtent3D, format: VkFormat, usage: VkImageUsageFlags) -> AllocatedImage {
+
+	image: AllocatedImage;
+	image.imageExtent = size;
+	image.imageFormat = format; 
+
+	imageInfo := image_create_info(image.imageFormat, usage, image.imageExtent);
+
+	imgAllocInfo: VmaAllocationCreateInfo;
+	imgAllocInfo.usage = .GPU_ONLY;
+	imgAllocInfo.requiredFlags = .DEVICE_LOCAL_BIT;
+
+	vmaCreateImage(gpuAllocator, *imageInfo, *imgAllocInfo, *image.image, *image.allocation, null);
+
+	aspectFlag: VkImageAspectFlags = .COLOR_BIT;
+	if format == .D32_SFLOAT {
+		aspectFlag = .DEPTH_BIT;
+	}
+	imageViewInfo := image_view_create_info(image.imageFormat, image.image, aspectFlag);
+
+	vkCreateImageView(device, *imageViewInfo, null, *image.imageView);
+	return image;
+}
+
+create_image :: (using s: *State, data: *void, size: VkExtent3D, format: VkFormat, usage: VkImageUsageFlags) -> AllocatedImage {
+
+	dataSize := size.depth * size.width * size.height * 4;
+	uploadBuffer := create_buffer(s, dataSize, .TRANSFER_SRC_BIT, .CPU_TO_GPU);
+	memcpy(uploadBuffer.info.pMappedData, data, dataSize);
+
+	image := create_image(s, size, format, usage | .TRANSFER_DST_BIT | .TRANSFER_SRC_BIT);
+
+	begin_immediate_submit(s);
+
+	transition_image(immediateCommandBuffer, image.image, .UNDEFINED, .TRANSFER_DST_OPTIMAL); 
+
+	copyRegion: VkBufferImageCopy;
+	copyRegion.bufferOffset = 0;
+	copyRegion.bufferRowLength = 0;
+	copyRegion.bufferImageHeight = 0;
+	copyRegion.imageSubresource.aspectMask = .COLOR_BIT;
+	copyRegion.imageSubresource.mipLevel = 0;
+	copyRegion.imageSubresource.baseArrayLayer = 0;
+	copyRegion.imageSubresource.layerCount = 1;
+	copyRegion.imageExtent = size;
+	vkCmdCopyBufferToImage(immediateCommandBuffer, uploadBuffer.buffer, image.image, .TRANSFER_DST_OPTIMAL, 1, *copyRegion);
+
+	transition_image(immediateCommandBuffer, image.image, .TRANSFER_DST_OPTIMAL, .SHADER_READ_ONLY_OPTIMAL); 
+
+	end_immediate_submit(s);
+	return image;
 }
 
 begin_immediate_submit :: (using s: *State) {
