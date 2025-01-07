@@ -10,7 +10,7 @@ PipelineBuilder :: struct {
 	colorAttachmentFormat: VkFormat;
 }
 
-build_pipeline :: (builder: *PipelineBuilder, s: *State) -> VkPipeline {
+build_pipeline :: (builder: *PipelineBuilder, s: *GfxDevice) -> VkPipeline {
 	// some default options
 	builder.inputAssembly.primitiveRestartEnable = VK_FALSE;
 	builder.rasterizer.lineWidth = 1.0;

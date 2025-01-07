@@ -7,6 +7,8 @@ BUILD_DEBUG_DIR :: "run/debug";
 BUILD_OPTIMIZED_DIR :: "run/optimized";
 BUILD_RELEASE_DIR :: "run/release";
 
+
+
 build :: ()
 {
     w := compiler_create_workspace();
@@ -53,13 +55,25 @@ build :: ()
     else if buildOptimized then build_optimized(w);
     else build_debug(w);
     
-	// add utilities for loading shader binaries
+	// add some helpers and defines
 	add_build_string(#string DONE
 	SHADER_GET :: (name: string) -> [] u8 {
 		#import "File";
 		#import "Basic";
 		return xx read_entire_file(tprint(".build/%.bin", name));
 	}
+	BuildType :: enum u8
+	{
+		DEBUG;
+		OPTIMIZED;
+		RELEASE;
+	}
+	GfxBackend :: enum u8
+	{
+		VULKAN;
+		DX12;
+	}
+	GFX_BACKEND :: GfxBackend.VULKAN;
 	DONE, w);
 
     add_build_file("src/main.jai", w);
