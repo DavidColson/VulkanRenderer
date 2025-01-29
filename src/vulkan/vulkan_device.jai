@@ -120,12 +120,206 @@ init_graphics_device :: (s: *GfxDevice, window: *SDL_Window, width: s32, height:
 	init_pipelines(s);
 	init_imgui(s);
 	// init_triangle_pipeline(s);
-	init_mesh_pipeline(s);
-	init_cube_mesh(s);
 
 	s.pc.data1 = Vector4.{1, 0, 0, 1};
 	s.pc.data2 = Vector4.{0, 0, 1, 1};
 }
+
+get_current_frame :: (s: *GfxDevice) -> *FrameData
+{
+	return *s.frames[s.frame_number % s.frames.count];
+}
+
+transition_image :: (cmd: VkCommandBuffer, image: VkImage, current_layout: VkImageLayout, new_layout: VkImageLayout) {
+	image_barrier: VkImageMemoryBarrier2;
+    image_barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    image_barrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT ;
+    image_barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    image_barrier.dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT  | VK_ACCESS_2_MEMORY_READ_BIT;
+    image_barrier.oldLayout = current_layout;
+    image_barrier.newLayout = new_layout;
+
+    aspect_mask: VkImageAspectFlags = ifx new_layout == .DEPTH_ATTACHMENT_OPTIMAL then .DEPTH_BIT else .COLOR_BIT;
+    image_barrier.subresourceRange = image_subresource_range(aspect_mask);
+    image_barrier.image = image;
+
+    dep_info: VkDependencyInfo;
+    dep_info.sType = .DEPENDENCY_INFO;
+    dep_info.imageMemoryBarrierCount = 1;
+    dep_info.pImageMemoryBarriers = *image_barrier;
+    
+    vkCmdPipelineBarrier2(cmd, *dep_info);
+}
+
+create_image :: (using s: *GfxDevice, size: VkExtent3D, format: VkFormat, usage: VkImageUsageFlags) -> AllocatedImage {
+
+	image: AllocatedImage;
+	image.imageExtent = size;
+	image.imageFormat = format; 
+
+	imageInfo := image_create_info(image.imageFormat, usage, image.imageExtent);
+
+	imgAllocInfo: VmaAllocationCreateInfo;
+	imgAllocInfo.usage = .GPU_ONLY;
+	imgAllocInfo.requiredFlags = .DEVICE_LOCAL_BIT;
+
+	vmaCreateImage(gpuAllocator, *imageInfo, *imgAllocInfo, *image.image, *image.allocation, null);
+
+	aspectFlag: VkImageAspectFlags = .COLOR_BIT;
+	if format == .D32_SFLOAT {
+		aspectFlag = .DEPTH_BIT;
+	}
+	imageViewInfo := image_view_create_info(image.imageFormat, image.image, aspectFlag);
+
+	vkCreateImageView(device, *imageViewInfo, null, *image.imageView);
+	return image;
+}
+
+create_image :: (using s: *GfxDevice, data: *void, size: VkExtent3D, format: VkFormat, usage: VkImageUsageFlags) -> AllocatedImage {
+
+	dataSize := size.depth * size.width * size.height * 4;
+	uploadBuffer := create_buffer(s, dataSize, .TRANSFER_SRC_BIT, .CPU_TO_GPU);
+	memcpy(uploadBuffer.info.pMappedData, data, dataSize);
+
+	image := create_image(s, size, format, usage | .TRANSFER_DST_BIT | .TRANSFER_SRC_BIT);
+
+	begin_immediate_submit(s);
+
+	transition_image(immediateCommandBuffer, image.image, .UNDEFINED, .TRANSFER_DST_OPTIMAL); 
+
+	copyRegion: VkBufferImageCopy;
+	copyRegion.bufferOffset = 0;
+	copyRegion.bufferRowLength = 0;
+	copyRegion.bufferImageHeight = 0;
+	copyRegion.imageSubresource.aspectMask = .COLOR_BIT;
+	copyRegion.imageSubresource.mipLevel = 0;
+	copyRegion.imageSubresource.baseArrayLayer = 0;
+	copyRegion.imageSubresource.layerCount = 1;
+	copyRegion.imageExtent = size;
+	vkCmdCopyBufferToImage(immediateCommandBuffer, uploadBuffer.buffer, image.image, .TRANSFER_DST_OPTIMAL, 1, *copyRegion);
+
+	transition_image(immediateCommandBuffer, image.image, .TRANSFER_DST_OPTIMAL, .SHADER_READ_ONLY_OPTIMAL); 
+
+	end_immediate_submit(s);
+	return image;
+}
+
+load_shader_module :: (bytes: []u8, device: VkDevice) -> VkShaderModule {
+	createInfo: VkShaderModuleCreateInfo;
+	createInfo.codeSize = xx bytes.count;
+	createInfo.pCode = cast(*u32) bytes.data;
+
+	shaderModule: VkShaderModule;
+	result := vkCreateShaderModule(device, *createInfo, null, *shaderModule);
+	assert(result == .SUCCESS, "Failed to create shader module");
+	return shaderModule;
+}
+
+create_buffer :: (s: *GfxDevice, size: u64, usage: VkBufferUsageFlags, memoryUsage: VmaMemoryUsage) -> AllocatedBuffer {
+	info: VkBufferCreateInfo;
+	info.size = size;
+	info.usage = usage;
+
+	allocInfo: VmaAllocationCreateInfo;
+	allocInfo.usage = memoryUsage;
+	allocInfo.flags = .MAPPED_BIT;
+	newBuffer: AllocatedBuffer;
+	result := vmaCreateBuffer(s.gpuAllocator, *info, *allocInfo, *newBuffer.buffer, *newBuffer.allocation, *newBuffer.info);
+	assert(result == .SUCCESS, "Failed to allocate buffer");
+	return newBuffer;
+}
+
+destroy_buffer :: (s: *GfxDevice, buffer: *AllocatedBuffer) {
+	vmaDestroyBuffer(s.gpuAllocator, buffer.buffer, buffer.allocation);
+}
+
+// evaluate if these functions definitely need to be exposed once more vulkan stuff is removed from main
+begin_immediate_submit :: (using s: *GfxDevice) {
+	result := vkResetFences(device, 1, *immediateFence);
+	assert(result == .SUCCESS, "Could not reset fence");
+	result = vkResetCommandBuffer(immediateCommandBuffer, 0);
+	assert(result == .SUCCESS, "Could not reset immediate command pool");
+
+	cmdBeginInfo := VkCommandBufferBeginInfo.{ flags = .ONE_TIME_SUBMIT_BIT };
+
+	result = vkBeginCommandBuffer(immediateCommandBuffer, *cmdBeginInfo);
+	assert(result == .SUCCESS, "Could not begin command buffer");
+}
+
+end_immediate_submit :: (using s: *GfxDevice) {
+	result := vkEndCommandBuffer(immediateCommandBuffer);
+	assert(result == .SUCCESS, "failed to end command buffer");
+
+	cmdInfo := command_buffer_submit_info(immediateCommandBuffer);
+	submit := submit_info(*cmdInfo, null, null);
+	result = vkQueueSubmit2(graphicsQueue, 1, *submit, immediateFence);
+	assert(result == .SUCCESS, "Failed to submit immediate cmd buffer");
+
+	// takes absolutely ages, blocks use of the queue!!
+	result = vkWaitForFences(device, 1, *immediateFence, VK_TRUE, 999999999999999999);
+	assert(result == .SUCCESS, "Wait For fences failed");
+}
+
+copy_image_to_image :: (cmd: VkCommandBuffer, source: VkImage, destination: VkImage, srcSize: VkExtent2D, dstSize: VkExtent2D) {
+	blitRegion: VkImageBlit2;
+	blitRegion.srcOffsets[1].x = xx srcSize.width;
+	blitRegion.srcOffsets[1].y = xx srcSize.height;
+	blitRegion.srcOffsets[1].z = 1;
+
+	blitRegion.dstOffsets[1].x = xx dstSize.width;
+	blitRegion.dstOffsets[1].y = xx dstSize.height;
+	blitRegion.dstOffsets[1].z = 1;
+
+	blitRegion.srcSubresource.aspectMask = .COLOR_BIT;
+	blitRegion.srcSubresource.baseArrayLayer = 0;
+	blitRegion.srcSubresource.layerCount = 1;
+	blitRegion.srcSubresource.mipLevel = 0;
+
+	blitRegion.dstSubresource.aspectMask = .COLOR_BIT;
+	blitRegion.dstSubresource.baseArrayLayer = 0;
+	blitRegion.dstSubresource.layerCount = 1;
+	blitRegion.dstSubresource.mipLevel = 0;
+
+	blitInfo: VkBlitImageInfo2;
+	blitInfo.dstImage = destination;
+	blitInfo.dstImageLayout = .TRANSFER_DST_OPTIMAL;
+	blitInfo.srcImage = source;
+	blitInfo.srcImageLayout = .TRANSFER_SRC_OPTIMAL;
+	blitInfo.filter = .LINEAR;
+	blitInfo.regionCount = 1;
+	blitInfo.pRegions = *blitRegion;
+
+	vkCmdBlitImage2(cmd, *blitInfo);
+}
+
+command_buffer_submit_info :: (cmd: VkCommandBuffer) -> VkCommandBufferSubmitInfo {
+	info: VkCommandBufferSubmitInfo;
+	info.commandBuffer = cmd;
+	return info;
+}
+
+semaphore_submit_info :: ( stage_mask: VkPipelineStageFlags2, semaphore: VkSemaphore) -> VkSemaphoreSubmitInfo {
+	submit_info: VkSemaphoreSubmitInfo;
+	submit_info.semaphore = semaphore;
+	submit_info.stageMask = stage_mask;
+	submit_info.value = 1;
+	return submit_info;
+}
+
+submit_info :: ( cmd: *VkCommandBufferSubmitInfo, signal_semaphore_info: *VkSemaphoreSubmitInfo, wait_semaphore_info: *VkSemaphoreSubmitInfo) -> VkSubmitInfo2 {
+	info: VkSubmitInfo2;
+	info.waitSemaphoreInfoCount = ifx wait_semaphore_info then cast(u32) 1 else cast(u32) 0;
+    info.pWaitSemaphoreInfos = wait_semaphore_info;
+
+    info.signalSemaphoreInfoCount = ifx signal_semaphore_info then cast(u32) 1 else cast(u32) 0;
+    info.pSignalSemaphoreInfos = signal_semaphore_info;
+
+    info.commandBufferInfoCount = 1;
+    info.pCommandBufferInfos = cmd;
+    return info;
+}
+
+#scope_file
 
 init_vulkan :: (state: *GfxDevice) -> bool {
 	#if VALIDATION_ENABLED 
@@ -570,202 +764,6 @@ init_imgui :: (s: *GfxDevice) {
 	ImGui_ImplVulkan_CreateFontsTexture();
 }
 
-init_triangle_pipeline :: (using s: *GfxDevice) {
-	VERT :: #run SHADER_GET("colored_triangle.vert");
-	vertShader := load_shader_module(VERT, device);
-	FRAG :: #run SHADER_GET("colored_triangle.frag");
-	fragShader := load_shader_module(FRAG, device);
-
-	trianglePipelineLayoutCreateInfo: VkPipelineLayoutCreateInfo;
-	vkCreatePipelineLayout(device, *trianglePipelineLayoutCreateInfo, null, *trianglePipelineLayout);
-
-	builder: PipelineBuilder;
-	builder.pipelineLayout = trianglePipelineLayout;
-	builder.inputAssembly.topology = .TRIANGLE_LIST;
-	builder.rasterizer.polygonMode = .FILL;
-	builder.rasterizer.cullMode = .NONE;
-	builder.rasterizer.frontFace = .CLOCKWISE;
-	builder.renderInfo.depthAttachmentFormat = .UNDEFINED;
-	builder_set_shaders(*builder, vertShader, fragShader);
-	builder_set_multisample_none(*builder);
-	builder_disable_blending(*builder);
-	builder_enable_depthtest(*builder, false, .NEVER);
-	builder_set_color_attachment_format(*builder, drawImage.imageFormat);
-	builder_set_depth_attachment_format(*builder, depthImage.imageFormat);
-
-	trianglePipeline = build_pipeline(*builder, s);
-}
-
-init_mesh_pipeline :: (using s: *GfxDevice) {
-	// load the texture for the cube
-	{
-		x, y: s32;
-		comp: s32;
-		imageData: *u8 = stbi_load("crate.png", *x, *y, *comp, 4);
-
-		crateTexture = create_image(s, imageData, VkExtent3D.{width = xx x, height = xx y, depth=1}, .R8G8B8A8_UNORM, .SAMPLED_BIT);
-	}
-
-	samplerInfo := VkSamplerCreateInfo.{magFilter = .LINEAR, minFilter= .LINEAR};
-	vkCreateSampler(device, *samplerInfo, null, *linearSampler);
-
-	// crate texture descriptor setup
-	{
-		builder: DescriptorLayoutBuilder;
-		add_binding_to_builder(*builder, 0, .COMBINED_IMAGE_SAMPLER);
-		textureDescriptorSetLayout = build_descriptor_layout(*builder, device, .FRAGMENT_BIT);
-
-		textureDescriptorSet = allocate_descriptor_set(*globalDescriptorAllocator, device, textureDescriptorSetLayout);
-
-		imgInfo: VkDescriptorImageInfo;
-		imgInfo.imageLayout = .SHADER_READ_ONLY_OPTIMAL;
-		imgInfo.imageView = crateTexture.imageView;
-		imgInfo.sampler = linearSampler;
-
-		imageWrite: VkWriteDescriptorSet;
-		imageWrite.dstSet = textureDescriptorSet;
-		imageWrite.descriptorCount = 1;
-		imageWrite.descriptorType = .COMBINED_IMAGE_SAMPLER;
-		imageWrite.pImageInfo = *imgInfo;
-
-		vkUpdateDescriptorSets(device, 1, *imageWrite, 0, null);
-	}
-
-	VERT :: #run SHADER_GET("colored_triangle_mesh.vert");
-	vertShader := load_shader_module(VERT, device);
-	// @todo this is duplicated above, something to improve
-	FRAG :: #run SHADER_GET("colored_triangle.frag");
-	fragShader := load_shader_module(FRAG, device);
-
-	pushConstant: VkPushConstantRange;
-	pushConstant.offset = 0;
-	pushConstant.size = size_of(GpuDrawPushConstants);
-	pushConstant.stageFlags = .VERTEX_BIT;
-
-	// @todo: set our descriptor set layout here for passing an image to the shader
-	meshPipelineLayoutCreateInfo: VkPipelineLayoutCreateInfo;
-	meshPipelineLayoutCreateInfo.pPushConstantRanges = *pushConstant;
-	meshPipelineLayoutCreateInfo.pushConstantRangeCount = 1;
-	meshPipelineLayoutCreateInfo.pSetLayouts = *textureDescriptorSetLayout;
-	meshPipelineLayoutCreateInfo.setLayoutCount = 1;
-
-	vkCreatePipelineLayout(device, *meshPipelineLayoutCreateInfo, null, *meshPipelineLayout);
-
-	builder: PipelineBuilder;
-	builder.pipelineLayout = meshPipelineLayout;
-	builder.inputAssembly.topology = .TRIANGLE_LIST;
-	builder.rasterizer.polygonMode = .FILL;
-	builder.rasterizer.cullMode = .NONE;
-	builder.rasterizer.frontFace = .CLOCKWISE;
-	builder.renderInfo.depthAttachmentFormat = .UNDEFINED;
-	builder.rasterizer.depthClampEnable = VK_TRUE;
-	builder_set_shaders(*builder, vertShader, fragShader);
-	builder_set_multisample_none(*builder);
-	builder_disable_blending(*builder);
-	builder_enable_depthtest(*builder, true, .GREATER_OR_EQUAL);
-	builder_set_color_attachment_format(*builder, drawImage.imageFormat);
-	builder_set_depth_attachment_format(*builder, depthImage.imageFormat);
-
-	meshPipeline = build_pipeline(*builder, s);
-}
-
-init_cube_mesh :: (using s: *GfxDevice) {
-	cubeVerts : [8]Vertex;
-	
-	// front side
-	cubeVerts[0].position = .{-0.5, -0.5, 0.5};
-	cubeVerts[0].uv_x = 0.0;
-	cubeVerts[0].uv_y = 0.0;
-	cubeVerts[1].position = .{0.5, -0.5, 0.5};
-	cubeVerts[1].uv_x = 1.0;
-	cubeVerts[1].uv_y = 0.0;
-	cubeVerts[2].position = .{-0.5, 0.5, 0.5};
-	cubeVerts[2].uv_x = 0.0;
-	cubeVerts[2].uv_y = 1.0;
-	cubeVerts[3].position = .{0.5, 0.5, 0.5};
-	cubeVerts[3].uv_x = 1.0;
-	cubeVerts[3].uv_y = 1.0;
-
-	// back side
-	cubeVerts[4].position = .{-0.5, -0.5, -0.5};
-	cubeVerts[4].uv_x = 1.0;
-	cubeVerts[4].uv_y = 0.0;
-	cubeVerts[5].position = .{0.5, -0.5, -0.5};
-	cubeVerts[5].uv_x = 0.0;
-	cubeVerts[5].uv_y = 0.0;
-	cubeVerts[6].position = .{-0.5, 0.5, -0.5};
-	cubeVerts[6].uv_x = 1.0;
-	cubeVerts[6].uv_y = 1.0;
-	cubeVerts[7].position = .{0.5, 0.5, -0.5};
-	cubeVerts[7].uv_x = 0.0;
-	cubeVerts[7].uv_y = 1.0;
-
-	cubeVerts[0].color = .{0, 0, 0, 1};
-	cubeVerts[1].color = .{0.5, 0.5, 0.5, 1};
-	cubeVerts[2].color = .{1, 0, 0, 1};
-	cubeVerts[3].color = .{0, 1, 0, 1};
-	cubeVerts[4].color = .{0, 0, 0, 1};
-	cubeVerts[5].color = .{0.5, 0.5, 0.5, 1};
-	cubeVerts[6].color = .{1, 0, 0, 1};
-	cubeVerts[7].color = .{0, 1, 0, 1};
-
-	cubeIndices : []u32 = .[
-		//Top
-        2, 6, 7,
-        2, 3, 7,
-
-        //Bottom
-        0, 4, 5,
-        0, 1, 5,
-
-        //Left
-        0, 2, 6,
-        0, 4, 6,
-
-        //Right
-        1, 3, 7,
-        1, 5, 7,
-
-        //Front
-        0, 2, 3,
-        0, 1, 3,
-
-        //Back
-        4, 6, 7,
-        4, 5, 7
-	];
-
-	cubeMesh = upload_mesh(s, cubeIndices, cubeVerts);
-}
-
-load_shader_module :: (bytes: []u8, device: VkDevice) -> VkShaderModule {
-	createInfo: VkShaderModuleCreateInfo;
-	createInfo.codeSize = xx bytes.count;
-	createInfo.pCode = cast(*u32) bytes.data;
-
-	shaderModule: VkShaderModule;
-	result := vkCreateShaderModule(device, *createInfo, null, *shaderModule);
-	assert(result == .SUCCESS, "Failed to create shader module");
-	return shaderModule;
-}
-
-logger :: (message: string, data: *void, info: Log_Info) {
-	#if BUILD_TYPE == .RELEASE then return;
-	if info.common_flags == .VERBOSE_ONLY && context.log_level != .VERBOSE then return;
-	if info.common_flags == .VERY_VERBOSE_ONLY && context.log_level != .VERY_VERBOSE then return;
-
-	color: Console_Color;
-	if info.common_flags == .ERROR then color = .RED;
-	if info.common_flags == .WARNING then color = .YELLOW;
-	
-	with_console_color(color, write_string(message));
-}
-
-get_current_frame :: (s: *GfxDevice) -> *FrameData
-{
-	return *s.frames[s.frame_number % s.frames.count];
-}
-
 supports_validation_layers :: () -> bool {
 	layer_count: u32;
 	vkEnumerateInstanceLayerProperties(*layer_count, null);
@@ -1089,225 +1087,7 @@ image_subresource_range :: (aspect_mask: VkImageAspectFlags) -> VkImageSubresour
     return sub_image;
 }
 
-transition_image :: (cmd: VkCommandBuffer, image: VkImage, current_layout: VkImageLayout, new_layout: VkImageLayout) {
-	image_barrier: VkImageMemoryBarrier2;
-    image_barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    image_barrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT ;
-    image_barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    image_barrier.dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT  | VK_ACCESS_2_MEMORY_READ_BIT;
-    image_barrier.oldLayout = current_layout;
-    image_barrier.newLayout = new_layout;
-
-    aspect_mask: VkImageAspectFlags = ifx new_layout == .DEPTH_ATTACHMENT_OPTIMAL then .DEPTH_BIT else .COLOR_BIT;
-    image_barrier.subresourceRange = image_subresource_range(aspect_mask);
-    image_barrier.image = image;
-
-    dep_info: VkDependencyInfo;
-    dep_info.sType = .DEPENDENCY_INFO;
-    dep_info.imageMemoryBarrierCount = 1;
-    dep_info.pImageMemoryBarriers = *image_barrier;
-    
-    vkCmdPipelineBarrier2(cmd, *dep_info);
-}
-
-copy_image_to_image :: (cmd: VkCommandBuffer, source: VkImage, destination: VkImage, srcSize: VkExtent2D, dstSize: VkExtent2D) {
-	blitRegion: VkImageBlit2;
-	blitRegion.srcOffsets[1].x = xx srcSize.width;
-	blitRegion.srcOffsets[1].y = xx srcSize.height;
-	blitRegion.srcOffsets[1].z = 1;
-
-	blitRegion.dstOffsets[1].x = xx dstSize.width;
-	blitRegion.dstOffsets[1].y = xx dstSize.height;
-	blitRegion.dstOffsets[1].z = 1;
-
-	blitRegion.srcSubresource.aspectMask = .COLOR_BIT;
-	blitRegion.srcSubresource.baseArrayLayer = 0;
-	blitRegion.srcSubresource.layerCount = 1;
-	blitRegion.srcSubresource.mipLevel = 0;
-
-	blitRegion.dstSubresource.aspectMask = .COLOR_BIT;
-	blitRegion.dstSubresource.baseArrayLayer = 0;
-	blitRegion.dstSubresource.layerCount = 1;
-	blitRegion.dstSubresource.mipLevel = 0;
-
-	blitInfo: VkBlitImageInfo2;
-	blitInfo.dstImage = destination;
-	blitInfo.dstImageLayout = .TRANSFER_DST_OPTIMAL;
-	blitInfo.srcImage = source;
-	blitInfo.srcImageLayout = .TRANSFER_SRC_OPTIMAL;
-	blitInfo.filter = .LINEAR;
-	blitInfo.regionCount = 1;
-	blitInfo.pRegions = *blitRegion;
-
-	vkCmdBlitImage2(cmd, *blitInfo);
-}
-
-create_buffer :: (s: *GfxDevice, size: u64, usage: VkBufferUsageFlags, memoryUsage: VmaMemoryUsage) -> AllocatedBuffer {
-	info: VkBufferCreateInfo;
-	info.size = size;
-	info.usage = usage;
-
-	allocInfo: VmaAllocationCreateInfo;
-	allocInfo.usage = memoryUsage;
-	allocInfo.flags = .MAPPED_BIT;
-	newBuffer: AllocatedBuffer;
-	result := vmaCreateBuffer(s.gpuAllocator, *info, *allocInfo, *newBuffer.buffer, *newBuffer.allocation, *newBuffer.info);
-	assert(result == .SUCCESS, "Failed to allocate buffer");
-	return newBuffer;
-}
-
-destroy_buffer :: (s: *GfxDevice, buffer: *AllocatedBuffer) {
-	vmaDestroyBuffer(s.gpuAllocator, buffer.buffer, buffer.allocation);
-}
-
-upload_mesh :: (s: *GfxDevice, indices: []u32, vertices: []Vertex) -> GpuMeshBuffers {
-	vertexBufferSize := vertices.count * size_of(Vertex);
-	indexBufferSize := indices.count * size_of(u32);
-
-	mesh: GpuMeshBuffers;
-
-	mesh.vertexBuffer = create_buffer(s, xx vertexBufferSize, .STORAGE_BUFFER_BIT | .TRANSFER_DST_BIT | .SHADER_DEVICE_ADDRESS_BIT, .GPU_ONLY);
-
-	deviceAddressInfo: VkBufferDeviceAddressInfo;
-	deviceAddressInfo.buffer = mesh.vertexBuffer.buffer;
-	mesh.deviceAddress = vkGetBufferDeviceAddress(s.device, *deviceAddressInfo);
-
-	mesh.indexBuffer = create_buffer(s, xx indexBufferSize, .INDEX_BUFFER_BIT | .TRANSFER_DST_BIT, .GPU_ONLY);
-
-	// here's where the actual data upload happens
-	// it's doing a full immediate submit, should research how to do this better
-	staging := create_buffer(s, xx (vertexBufferSize + indexBufferSize), .TRANSFER_SRC_BIT, .CPU_ONLY);
-
-	data := staging.info.pMappedData;
-
-	memcpy(data, vertices.data, vertexBufferSize);
-	memcpy(cast(*u8)data + vertexBufferSize, indices.data, indexBufferSize);
-
-	begin_immediate_submit(s);
-
-	vertexCopy: VkBufferCopy;
-	vertexCopy.dstOffset = 0;
-	vertexCopy.srcOffset = 0;
-	vertexCopy.size = xx vertexBufferSize;
-	vkCmdCopyBuffer(s.immediateCommandBuffer, staging.buffer, mesh.vertexBuffer.buffer, 1, *vertexCopy);
-
-	indexCopy: VkBufferCopy;
-	indexCopy.dstOffset = 0;
-	indexCopy.srcOffset = xx vertexBufferSize;
-	indexCopy.size = xx indexBufferSize;
-	vkCmdCopyBuffer(s.immediateCommandBuffer, staging.buffer, mesh.indexBuffer.buffer, 1, *indexCopy);
-
-	end_immediate_submit(s);
-	return mesh;
-}
-
-create_image :: (using s: *GfxDevice, size: VkExtent3D, format: VkFormat, usage: VkImageUsageFlags) -> AllocatedImage {
-
-	image: AllocatedImage;
-	image.imageExtent = size;
-	image.imageFormat = format; 
-
-	imageInfo := image_create_info(image.imageFormat, usage, image.imageExtent);
-
-	imgAllocInfo: VmaAllocationCreateInfo;
-	imgAllocInfo.usage = .GPU_ONLY;
-	imgAllocInfo.requiredFlags = .DEVICE_LOCAL_BIT;
-
-	vmaCreateImage(gpuAllocator, *imageInfo, *imgAllocInfo, *image.image, *image.allocation, null);
-
-	aspectFlag: VkImageAspectFlags = .COLOR_BIT;
-	if format == .D32_SFLOAT {
-		aspectFlag = .DEPTH_BIT;
-	}
-	imageViewInfo := image_view_create_info(image.imageFormat, image.image, aspectFlag);
-
-	vkCreateImageView(device, *imageViewInfo, null, *image.imageView);
-	return image;
-}
-
-create_image :: (using s: *GfxDevice, data: *void, size: VkExtent3D, format: VkFormat, usage: VkImageUsageFlags) -> AllocatedImage {
-
-	dataSize := size.depth * size.width * size.height * 4;
-	uploadBuffer := create_buffer(s, dataSize, .TRANSFER_SRC_BIT, .CPU_TO_GPU);
-	memcpy(uploadBuffer.info.pMappedData, data, dataSize);
-
-	image := create_image(s, size, format, usage | .TRANSFER_DST_BIT | .TRANSFER_SRC_BIT);
-
-	begin_immediate_submit(s);
-
-	transition_image(immediateCommandBuffer, image.image, .UNDEFINED, .TRANSFER_DST_OPTIMAL); 
-
-	copyRegion: VkBufferImageCopy;
-	copyRegion.bufferOffset = 0;
-	copyRegion.bufferRowLength = 0;
-	copyRegion.bufferImageHeight = 0;
-	copyRegion.imageSubresource.aspectMask = .COLOR_BIT;
-	copyRegion.imageSubresource.mipLevel = 0;
-	copyRegion.imageSubresource.baseArrayLayer = 0;
-	copyRegion.imageSubresource.layerCount = 1;
-	copyRegion.imageExtent = size;
-	vkCmdCopyBufferToImage(immediateCommandBuffer, uploadBuffer.buffer, image.image, .TRANSFER_DST_OPTIMAL, 1, *copyRegion);
-
-	transition_image(immediateCommandBuffer, image.image, .TRANSFER_DST_OPTIMAL, .SHADER_READ_ONLY_OPTIMAL); 
-
-	end_immediate_submit(s);
-	return image;
-}
-
-begin_immediate_submit :: (using s: *GfxDevice) {
-	result := vkResetFences(device, 1, *immediateFence);
-	assert(result == .SUCCESS, "Could not reset fence");
-	result = vkResetCommandBuffer(immediateCommandBuffer, 0);
-	assert(result == .SUCCESS, "Could not reset immediate command pool");
-
-	cmdBeginInfo := VkCommandBufferBeginInfo.{ flags = .ONE_TIME_SUBMIT_BIT };
-
-	result = vkBeginCommandBuffer(immediateCommandBuffer, *cmdBeginInfo);
-	assert(result == .SUCCESS, "Could not begin command buffer");
-}
-
-end_immediate_submit :: (using s: *GfxDevice) {
-	result := vkEndCommandBuffer(immediateCommandBuffer);
-	assert(result == .SUCCESS, "failed to end command buffer");
-
-	cmdInfo := command_buffer_submit_info(immediateCommandBuffer);
-	submit := submit_info(*cmdInfo, null, null);
-	result = vkQueueSubmit2(graphicsQueue, 1, *submit, immediateFence);
-	assert(result == .SUCCESS, "Failed to submit immediate cmd buffer");
-
-	// takes absolutely ages, blocks use of the queue!!
-	result = vkWaitForFences(device, 1, *immediateFence, VK_TRUE, 999999999999999999);
-	assert(result == .SUCCESS, "Wait For fences failed");
-}
-
 // createinfos
-
-command_buffer_submit_info :: (cmd: VkCommandBuffer) -> VkCommandBufferSubmitInfo {
-	info: VkCommandBufferSubmitInfo;
-	info.commandBuffer = cmd;
-	return info;
-}
-
-semaphore_submit_info :: ( stage_mask: VkPipelineStageFlags2, semaphore: VkSemaphore) -> VkSemaphoreSubmitInfo {
-	submit_info: VkSemaphoreSubmitInfo;
-	submit_info.semaphore = semaphore;
-	submit_info.stageMask = stage_mask;
-	submit_info.value = 1;
-	return submit_info;
-}
-
-submit_info :: ( cmd: *VkCommandBufferSubmitInfo, signal_semaphore_info: *VkSemaphoreSubmitInfo, wait_semaphore_info: *VkSemaphoreSubmitInfo) -> VkSubmitInfo2 {
-	info: VkSubmitInfo2;
-	info.waitSemaphoreInfoCount = ifx wait_semaphore_info then cast(u32) 1 else cast(u32) 0;
-    info.pWaitSemaphoreInfos = wait_semaphore_info;
-
-    info.signalSemaphoreInfoCount = ifx signal_semaphore_info then cast(u32) 1 else cast(u32) 0;
-    info.pSignalSemaphoreInfos = signal_semaphore_info;
-
-    info.commandBufferInfoCount = 1;
-    info.pCommandBufferInfos = cmd;
-    return info;
-}
 
 image_create_info :: (format: VkFormat, usageFlags: VkImageUsageFlags, extent: VkExtent3D) -> VkImageCreateInfo {
 	info: VkImageCreateInfo;
@@ -1333,28 +1113,6 @@ image_view_create_info :: (format: VkFormat, image: VkImage, aspectFlags: VkImag
 	info.subresourceRange.layerCount = 1;
 	info.subresourceRange.aspectMask = aspectFlags;
 	return info;
-}
-
-// Return the length of s, a C-style zero-terminated string.
-// If you pass in a pointer that is not zero-terminated, BAD things will happen!
-strlen :: (s: *u8) -> s64 {  
-    count: s64 = 0;
-
-    while << s {
-        count += 1;
-        s += 1;
-    }
-
-    return count;
-}
-
-strcmp :: (s1: *u8, s2: *u8) -> s32 {
-	while (<<s1 != #char "\0" && (<<s1 == <<s2)) 
-	{
-		s1 += 1; 
-		s2 += 1;
-	}
-    return (<<s1 - <<s2);
 }
 
 #import "vulkan";
