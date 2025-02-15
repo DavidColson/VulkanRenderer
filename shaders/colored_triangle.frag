@@ -8,11 +8,12 @@ layout (location = 1) in vec2 inUV;
 layout (location = 0) out vec4 outFragColor;
 
 // texture
-layout(set=0, binding=0) uniform sampler2D crateTexture;
+layout(set=0, binding=0) uniform texture2D crateTexture;
+layout(set=0, binding=1) uniform sampler linearSampler;
 
 void main() 
 {
 	//return red
 	// outFragColor = vec4(inColor,1.0f);
-	outFragColor = texture(crateTexture, inUV);
+	outFragColor = texture(sampler2D(crateTexture, linearSampler), inUV);
 }

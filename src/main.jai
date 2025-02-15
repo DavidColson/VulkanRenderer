@@ -30,7 +30,7 @@ HEIGHT :: 600;
 // all the things you can do with a command buffer
 
 RendererState :: struct {
-	device: RHIDevice;
+	device: Device;
 	meshPipeline: Pipeline;
 }
 
@@ -51,7 +51,7 @@ main :: () {
 		log_error("Could not create window: %\n", to_string(SDL_GetError()));
 	}
 
-	device: RHIDevice;
+	device: Device;
 	rhi_device_init(*device, window, WIDTH, HEIGHT);
 	init_mesh_pipeline(*device);
 	init_cube_mesh(*device);
@@ -78,7 +78,7 @@ main :: () {
 	}
 }
 
-init_mesh_pipeline :: (using s: *RHIDevice) {
+init_mesh_pipeline :: (using s: *Device) {
 	// load the texture for the cube
 	{
 		x, y: s32;
@@ -88,43 +88,41 @@ init_mesh_pipeline :: (using s: *RHIDevice) {
 		crateTexture = rhi_device_create_image(s, imageData, VkExtent3D.{width = xx x, height = xx y, depth=1}, .RGBA8, .SAMPLED_BIT);
 	}
 
-	samplerInfo := VkSamplerCreateInfo.{magFilter = .LINEAR, minFilter= .LINEAR};
-	vkCreateSampler(device, *samplerInfo, null, *linearSampler);
+	linearSampler = rhi_device_create_sampler(s, .{
+		magFilter = .LINEAR,
+		minFilter = .LINEAR,
+	});
 
-	// crate texture descriptor setup
-	{
-		builder: DescriptorLayoutBuilder;
-		add_binding_to_builder(*builder, 0, .COMBINED_IMAGE_SAMPLER);
-		textureDescriptorSetLayout = build_descriptor_layout(*builder, device, .FRAGMENT_BIT);
+	cubeMaterialBindGroupLayout = rhi_device_create_bind_group_layout(s, .{
+		bindings = .[
+			.{ 0, .SAMPLED_IMAGE, .PIXEL },
+			.{ 1, .SAMPLER, .PIXEL },
+		]
+	});
 
-		textureDescriptorSet = allocate_descriptor_set(*globalDescriptorAllocator, device, textureDescriptorSetLayout);
+	cubeMaterialBindGroup = rhi_device_create_bind_group(s, .{
+		layout = cubeMaterialBindGroupLayout,
+		resources = .[
+			.{slot = 0, texture = crateTexture},
+			.{slot = 1, sampler = linearSampler}
+		]
+	});
 
-		imgInfo: VkDescriptorImageInfo;
-		imgInfo.imageLayout = .SHADER_READ_ONLY_OPTIMAL;
-		imgInfo.imageView = crateTexture.imageView;
-		imgInfo.sampler = linearSampler;
-
-		imageWrite: VkWriteDescriptorSet;
-		imageWrite.dstSet = textureDescriptorSet;
-		imageWrite.descriptorCount = 1;
-		imageWrite.descriptorType = .COMBINED_IMAGE_SAMPLER;
-		imageWrite.pImageInfo = *imgInfo;
-
-		vkUpdateDescriptorSets(device, 1, *imageWrite, 0, null);
-	}
-
+	// @todo: move into pipeline desc
 	pushConstant: VkPushConstantRange;
 	pushConstant.offset = 0;
 	pushConstant.size = size_of(GpuDrawPushConstants);
 	pushConstant.stageFlags = .VERTEX_BIT;
 
-	// @todo: set our descriptor set layout here for passing an image to the shader
+	// @todo: move this inside create_pipeline, given a list of bind group layouts
 	meshPipelineLayoutCreateInfo: VkPipelineLayoutCreateInfo;
 	meshPipelineLayoutCreateInfo.pPushConstantRanges = *pushConstant;
 	meshPipelineLayoutCreateInfo.pushConstantRangeCount = 1;
-	meshPipelineLayoutCreateInfo.pSetLayouts = *textureDescriptorSetLayout;
+	meshPipelineLayoutCreateInfo.pSetLayouts = *cubeMaterialBindGroupLayout.platformHandle;
 	meshPipelineLayoutCreateInfo.setLayoutCount = 1;
 
+
+	meshPipelineLayout: VkPipelineLayout;
 	vkCreatePipelineLayout(device, *meshPipelineLayoutCreateInfo, null, *meshPipelineLayout);
 
 	meshPipeline = rhi_device_create_pipeline(s, .{
@@ -150,7 +148,7 @@ init_mesh_pipeline :: (using s: *RHIDevice) {
 	});
 }
 
-init_cube_mesh :: (using s: *RHIDevice) {
+init_cube_mesh :: (using s: *Device) {
 	cubeVerts : [8]Vertex;
 	
 	// front side
@@ -219,7 +217,7 @@ init_cube_mesh :: (using s: *RHIDevice) {
 	cubeMesh = upload_mesh(s, cubeIndices, cubeVerts);
 }
 
-upload_mesh :: (s: *RHIDevice, indices: []u32, vertices: []Vertex) -> GpuMeshBuffers {
+upload_mesh :: (s: *Device, indices: []u32, vertices: []Vertex) -> GpuMeshBuffers {
 	vertexBufferSize := vertices.count * size_of(Vertex);
 	indexBufferSize := indices.count * size_of(u32);
 
@@ -260,7 +258,7 @@ upload_mesh :: (s: *RHIDevice, indices: []u32, vertices: []Vertex) -> GpuMeshBuf
 	return mesh;
 }
 
-draw :: (s: *RHIDevice) {
+draw :: (s: *Device) {
 	ImGui_ImplVulkan_NewFrame();
 	ImGui_ImplSDL2_NewFrame();
 	ImGui.NewFrame();
@@ -379,7 +377,7 @@ draw :: (s: *RHIDevice) {
 	s.frame_number += 1;
 }
 
-draw_geometry :: (cmd: VkCommandBuffer, s: *RHIDevice) {
+draw_geometry :: (cmd: VkCommandBuffer, s: *Device) {
 	colorAttachment: VkRenderingAttachmentInfo;
 	colorAttachment.imageView = s.drawImage.imageView;
 	colorAttachment.imageLayout = .COLOR_ATTACHMENT_OPTIMAL;
@@ -422,7 +420,7 @@ draw_geometry :: (cmd: VkCommandBuffer, s: *RHIDevice) {
 
 	// draw mesh cube
 	vkCmdBindPipeline(cmd, .GRAPHICS, s.meshPipeline.platformHandle);
-	vkCmdBindDescriptorSets(cmd, .GRAPHICS, s.meshPipelineLayout, 0, 1, *s.textureDescriptorSet, 0, null);
+	vkCmdBindDescriptorSets(cmd, .GRAPHICS, s.meshPipeline.pipelineLayout, 0, 1, *s.cubeMaterialBindGroup.platformHandle, 0, null);
 
 	projection := make_projection_matrix(60.0 * PI / 180.0, cast(float)WIDTH/cast(float)HEIGHT, 1000.0, 0.01, 0.0, 0.0, true);
 	projection._11 *= -1; // @todo eh?
@@ -437,7 +435,7 @@ draw_geometry :: (cmd: VkCommandBuffer, s: *RHIDevice) {
 	pushConstants.worldMatrix = transpose(projection * view * model);
 	pushConstants.vertexBuffer = s.cubeMesh.deviceAddress;
 
-	vkCmdPushConstants(cmd, s.meshPipelineLayout, .VERTEX_BIT, 0, size_of(GpuDrawPushConstants), *pushConstants);
+	vkCmdPushConstants(cmd, s.meshPipeline.pipelineLayout, .VERTEX_BIT, 0, size_of(GpuDrawPushConstants), *pushConstants);
 	vkCmdBindIndexBuffer(cmd, s.cubeMesh.indexBuffer.buffer, 0, .UINT32);
 
 	vkCmdDrawIndexed(cmd, 36, 1, 0, 0, 0);

@@ -1,6 +1,6 @@
 
 // Types
-RHIDevice :: struct {
+Device :: struct {
 	window: *SDL_Window;
 	width: s32;
 	height: s32;
@@ -28,18 +28,18 @@ RHIDevice :: struct {
 	imguiDescriptorPool: VkDescriptorPool;
 
 	gradientPipeline: VkPipeline;
-gradientPipelineLayout: VkPipelineLayout;
+	gradientPipelineLayout: VkPipelineLayout;
 
 	trianglePipeline: VkPipeline;
 	trianglePipelineLayout: VkPipelineLayout;
 
+	// @todo: move out of rhi to higher level rendering
 	meshPipeline: Pipeline;
-	meshPipelineLayout: VkPipelineLayout;
 	cubeMesh: GpuMeshBuffers;
-	crateTexture: AllocatedImage;
-	linearSampler: VkSampler;
-	textureDescriptorSetLayout: VkDescriptorSetLayout;
-	textureDescriptorSet: VkDescriptorSet;
+	crateTexture: Texture;
+	linearSampler: Sampler;
+	cubeMaterialBindGroup: BindGroup;
+	cubeMaterialBindGroupLayout: BindGroupLayout;
 
 	immediateFence: VkFence;
 	immediateCommandBuffer: VkCommandBuffer;
@@ -47,8 +47,8 @@ gradientPipelineLayout: VkPipelineLayout;
 
 	gpuAllocator: VmaAllocator;
 
-	drawImage: AllocatedImage;
-	depthImage: AllocatedImage;
+	drawImage: Texture;
+	depthImage: Texture;
 	drawExtent: VkExtent2D;
 	frames: [..] FrameData;
 	frame_number: int;
@@ -82,8 +82,8 @@ Vertex :: struct {
 }
 
 GpuMeshBuffers :: struct {
-	indexBuffer: AllocatedBuffer;
-	vertexBuffer: AllocatedBuffer;
+	indexBuffer: Buffer;
+	vertexBuffer: Buffer;
 	deviceAddress: VkDeviceAddress;
 }
 
@@ -94,36 +94,49 @@ GpuDrawPushConstants :: struct {
 
 // Resources
 
+BindGroupLayout :: struct {
+	platformHandle: VkDescriptorSetLayout = VK_NULL_HANDLE;
+	bindings: []Binding;
+	descriptorSetPool: DescriptorSetPool;
+}
+
+BindGroup :: struct {
+	platformHandle: VkDescriptorSet = VK_NULL_HANDLE;
+}
+
 Pipeline :: struct {
-	platformHandle: VkPipeline;
+	platformHandle: VkPipeline = VK_NULL_HANDLE;
+	pipelineLayout: VkPipelineLayout = VK_NULL_HANDLE;
 }
 
 Shader :: struct {
-	platformHandle: VkShaderModule;
+	platformHandle: VkShaderModule = VK_NULL_HANDLE;
 }
 
-AllocatedImage :: struct {
+Texture :: struct {
 	imageFormat: PixelFormat;
 
 	// backend specific handles
-	image: VkImage;
+	image: VkImage = VK_NULL_HANDLE;
 	imageView: VkImageView;
 	allocation: VmaAllocation;
 	imageExtent: VkExtent3D;
 }
 
-AllocatedBuffer :: struct {
-	buffer: VkBuffer;
+Sampler :: struct {
+	platformHandle: VkSampler = VK_NULL_HANDLE;
+}
+
+Buffer :: struct {
+	buffer: VkBuffer = VK_NULL_HANDLE;
 	allocation: VmaAllocation;
 	info: VmaAllocationInfo;
 }
 
-
-
 // rhi api
 
 // core graphics initialization
-rhi_device_init :: (s: *RHIDevice, window: *SDL_Window, width: s32, height: s32) {
+rhi_device_init :: (s: *Device, window: *SDL_Window, width: s32, height: s32) {
 	s.window = window;
 	s.width = width;
 	s.height = height;
@@ -142,7 +155,7 @@ rhi_device_init :: (s: *RHIDevice, window: *SDL_Window, width: s32, height: s32)
 	s.pc.data2 = Vector4.{0, 0, 1, 1};
 }
 
-rhi_device_get_current_frame :: (s: *RHIDevice) -> *FrameData
+rhi_device_get_current_frame :: (s: *Device) -> *FrameData
 {
 	return *s.frames[s.frame_number % s.frames.count];
 }
@@ -169,7 +182,137 @@ transition_image :: (cmd: VkCommandBuffer, image: VkImage, current_layout: VkIma
     vkCmdPipelineBarrier2(cmd, *dep_info);
 }
 
-rhi_device_create_pipeline :: (using s: *RHIDevice, opts: PipelineCreateOptions) -> Pipeline {
+rhi_device_create_bind_group_layout :: (using s: *Device, opts: BindGroupLayoutDesc) -> BindGroupLayout {
+	info: VkDescriptorSetLayoutCreateInfo;
+	info.pNext = null;
+	info.flags = 0;
+
+	bindingTypeCounts: [BindingType.NUM_BINDING_TYPES]s32;
+	bindings : [..]VkDescriptorSetLayoutBinding;
+	bindings.allocator = temp;
+	for 0..opts.bindings.count-1 {
+		newBind: VkDescriptorSetLayoutBinding;
+		newBind.binding = xx opts.bindings[it].slot;
+		newBind.descriptorCount = 1;
+		newBind.descriptorType = binding_type_to_vk_descriptor_type(opts.bindings[it].type);
+		newBind.stageFlags = shader_stage_to_vk_shader_stage(opts.bindings[it].shaderStage);
+		array_add(*bindings, newBind);
+		bindingTypeCounts[opts.bindings[it].type] += 1;
+	}
+	info.pBindings = bindings.data;
+	info.bindingCount = xx bindings.count;
+
+	layout: BindGroupLayout;
+	result := vkCreateDescriptorSetLayout(s.device, *info, null, *layout.platformHandle);
+	assert(result == .SUCCESS, "Could not create descriptor set layout");
+
+	poolSizes: [..]VkDescriptorPoolSize;
+	for 0..bindingTypeCounts.count-1 {
+		if bindingTypeCounts[it] > 0 {
+			array_add(*poolSizes, VkDescriptorPoolSize.{ type = binding_type_to_vk_descriptor_type(cast(BindingType) it), descriptorCount = xx bindingTypeCounts[it] }); 
+		}
+	}
+	layout.descriptorSetPool.poolSizes = poolSizes;
+	layout.bindings = opts.bindings;
+	return layout;
+}
+
+rhi_device_create_bind_group :: (using s: *Device, opts: BindGroupDesc) -> BindGroup {
+	// allocate a descriptor set from the pool (expanding pool if needed)
+	setPool := *opts.layout.descriptorSetPool;
+	if setPool.descriptorSetIndex == setPool.descriptorSets.count {
+		// pools are full, need to allocate a new group of descriptor sets
+		poolInfo: VkDescriptorPoolCreateInfo;
+		poolInfo.flags = 0;
+		poolInfo.maxSets = DESCRIPTOR_POOL_SIZE;
+		poolInfo.poolSizeCount = xx setPool.poolSizes.count;
+		poolInfo.pPoolSizes = setPool.poolSizes.data;
+
+		pool: VkDescriptorPool;
+		result := vkCreateDescriptorPool(device, *poolInfo, null, *pool);
+		array_add(*setPool.pools, pool);
+		assert(result == .SUCCESS, "Failed to create descriptor pool");
+
+		array_reserve(*setPool.descriptorSets, setPool.descriptorSets.count + DESCRIPTOR_POOL_SIZE);
+
+		setLayouts: [DESCRIPTOR_POOL_SIZE]VkDescriptorSetLayout;
+		for 0..DESCRIPTOR_POOL_SIZE-1 {
+			setLayouts[it] = opts.layout.platformHandle;
+		}
+
+		allocInfo: VkDescriptorSetAllocateInfo;
+		allocInfo.descriptorPool = pool;
+		allocInfo.descriptorSetCount = DESCRIPTOR_POOL_SIZE;
+		allocInfo.pSetLayouts = setLayouts.data;
+
+		result = vkAllocateDescriptorSets(device, *allocInfo, setPool.descriptorSets.data + setPool.descriptorSets.count);
+		assert(result == .SUCCESS, "Failed to allocate descriptor set");
+		setPool.descriptorSets.count += DESCRIPTOR_POOL_SIZE;
+	}
+
+	descriptorSet := setPool.descriptorSets[setPool.descriptorSetIndex];
+	setPool.descriptorSetIndex += 1;
+	
+	writeDescriptorSets: [..]VkWriteDescriptorSet;
+	writeDescriptorSets.allocator = temp;
+
+	imageInfos: [..]VkDescriptorImageInfo;
+	imageInfos.allocator = temp;
+
+	// update descriptor set with the given data
+	for 0..opts.layout.bindings.count-1 {
+		bind := opts.layout.bindings[it];
+		if bind.type == .SAMPLER {
+			assert(opts.resources[it].sampler.platformHandle != VK_NULL_HANDLE);
+
+			imgInfo := array_add(*imageInfos);
+			imgInfo.sampler = opts.resources[it].sampler.platformHandle;
+
+			descriptorWrite := array_add(*writeDescriptorSets);
+			descriptorWrite.dstSet = descriptorSet;
+			descriptorWrite.dstBinding = xx opts.resources[it].slot;
+			descriptorWrite.descriptorCount = 1;
+			descriptorWrite.descriptorType = .SAMPLER;
+			descriptorWrite.pImageInfo = imgInfo;
+		}
+		else if bind.type == .SAMPLED_IMAGE {
+			assert(opts.resources[it].texture.image != VK_NULL_HANDLE);
+
+			imgInfo := array_add(*imageInfos);
+			imgInfo.imageLayout = .SHADER_READ_ONLY_OPTIMAL;
+			imgInfo.imageView = opts.resources[it].texture.imageView;
+
+			descriptorWrite := array_add(*writeDescriptorSets);
+			descriptorWrite.dstSet = descriptorSet;
+			descriptorWrite.dstBinding = xx opts.resources[it].slot;
+			descriptorWrite.descriptorCount = 1;
+			descriptorWrite.descriptorType = .SAMPLED_IMAGE;
+			descriptorWrite.pImageInfo = imgInfo;
+		}
+		else if bind.type == .STORAGE_IMAGE {
+			assert(opts.resources[it].texture.image != VK_NULL_HANDLE);
+
+			imgInfo := array_add(*imageInfos);
+			imgInfo.imageLayout = .GENERAL;
+			imgInfo.imageView = opts.resources[it].texture.imageView;
+
+			descriptorWrite := array_add(*writeDescriptorSets);
+			descriptorWrite.dstSet = descriptorSet;
+			descriptorWrite.dstBinding = xx opts.resources[it].slot;
+			descriptorWrite.descriptorCount = 1;
+			descriptorWrite.descriptorType = .STORAGE_IMAGE;
+			descriptorWrite.pImageInfo = imgInfo;
+		}
+	}
+
+	vkUpdateDescriptorSets(device, xx writeDescriptorSets.count, writeDescriptorSets.data, 0, null);
+
+	bindGroup: BindGroup;
+	bindGroup.platformHandle = descriptorSet;
+	return bindGroup;
+}
+
+rhi_device_create_pipeline :: (using s: *Device, opts: PipelineDesc) -> Pipeline {
 	pipelineInfo: VkGraphicsPipelineCreateInfo;
 	pipelineInfo.layout = opts.vkLayout;
 
@@ -254,6 +397,7 @@ rhi_device_create_pipeline :: (using s: *RHIDevice, opts: PipelineCreateOptions)
 	pipelineInfo.pDynamicState = *dynamicInfo;
 
 	pipeline: Pipeline;
+	pipeline.pipelineLayout = opts.vkLayout;
 	if vkCreateGraphicsPipelines(s.device, VK_NULL_HANDLE, 1, *pipelineInfo, null, *pipeline.platformHandle) == .SUCCESS {
 		return pipeline;
 	}
@@ -263,9 +407,9 @@ rhi_device_create_pipeline :: (using s: *RHIDevice, opts: PipelineCreateOptions)
 	return pipeline;
 }
 
-rhi_device_create_image :: (using s: *RHIDevice, size: VkExtent3D, format: PixelFormat, usage: VkImageUsageFlags) -> AllocatedImage {
+rhi_device_create_image :: (using s: *Device, size: VkExtent3D, format: PixelFormat, usage: VkImageUsageFlags) -> Texture {
 
-	image: AllocatedImage;
+	image: Texture;
 	image.imageExtent = size;
 	image.imageFormat = format; 
 
@@ -295,7 +439,7 @@ rhi_device_create_image :: (using s: *RHIDevice, size: VkExtent3D, format: Pixel
 	return image;
 }
 
-rhi_device_create_image :: (using s: *RHIDevice, data: *void, size: VkExtent3D, format: PixelFormat, usage: VkImageUsageFlags) -> AllocatedImage {
+rhi_device_create_image :: (using s: *Device, data: *void, size: VkExtent3D, format: PixelFormat, usage: VkImageUsageFlags) -> Texture {
 
 	dataSize := size.depth * size.width * size.height * 4;
 	uploadBuffer := rhi_device_create_buffer(s, dataSize, .TRANSFER_SRC_BIT, .CPU_TO_GPU);
@@ -324,7 +468,18 @@ rhi_device_create_image :: (using s: *RHIDevice, data: *void, size: VkExtent3D, 
 	return image;
 }
 
-rhi_device_create_shader :: (s: *RHIDevice, bytes: []u8) -> Shader {
+rhi_device_create_sampler :: (s: *Device, opts: SamplerDesc) -> Sampler {
+	samplerInfo: VkSamplerCreateInfo;
+	samplerInfo.magFilter = opts.magFilter;
+	samplerInfo.minFilter = opts.minFilter;
+	samplerInfo.anisotropyEnable = VK_FALSE;
+
+	sampler: Sampler;
+	vkCreateSampler(s.device, *samplerInfo, null, *sampler.platformHandle);
+	return sampler;
+}
+
+rhi_device_create_shader :: (s: *Device, bytes: []u8) -> Shader {
 	createInfo: VkShaderModuleCreateInfo;
 	createInfo.codeSize = xx bytes.count;
 	createInfo.pCode = cast(*u32) bytes.data;
@@ -335,7 +490,7 @@ rhi_device_create_shader :: (s: *RHIDevice, bytes: []u8) -> Shader {
 	return .{platformHandle = shaderModule};
 }
 
-rhi_device_create_buffer :: (s: *RHIDevice, size: u64, usage: VkBufferUsageFlags, memoryUsage: VmaMemoryUsage) -> AllocatedBuffer {
+rhi_device_create_buffer :: (s: *Device, size: u64, usage: VkBufferUsageFlags, memoryUsage: VmaMemoryUsage) -> Buffer {
 	info: VkBufferCreateInfo;
 	info.size = size;
 	info.usage = usage;
@@ -343,18 +498,18 @@ rhi_device_create_buffer :: (s: *RHIDevice, size: u64, usage: VkBufferUsageFlags
 	allocInfo: VmaAllocationCreateInfo;
 	allocInfo.usage = memoryUsage;
 	allocInfo.flags = .MAPPED_BIT;
-	newBuffer: AllocatedBuffer;
+	newBuffer: Buffer;
 	result := vmaCreateBuffer(s.gpuAllocator, *info, *allocInfo, *newBuffer.buffer, *newBuffer.allocation, *newBuffer.info);
 	assert(result == .SUCCESS, "Failed to allocate buffer");
 	return newBuffer;
 }
 
-rhi_device_destroy_buffer :: (s: *RHIDevice, buffer: *AllocatedBuffer) {
+rhi_device_destroy_buffer :: (s: *Device, buffer: *Buffer) {
 	vmaDestroyBuffer(s.gpuAllocator, buffer.buffer, buffer.allocation);
 }
 
 // evaluate if these functions definitely need to be exposed once more vulkan stuff is removed from main
-rhi_device_begin_immediate_submit :: (using s: *RHIDevice) {
+rhi_device_begin_immediate_submit :: (using s: *Device) {
 	result := vkResetFences(device, 1, *immediateFence);
 	assert(result == .SUCCESS, "Could not reset fence");
 	result = vkResetCommandBuffer(immediateCommandBuffer, 0);
@@ -366,7 +521,7 @@ rhi_device_begin_immediate_submit :: (using s: *RHIDevice) {
 	assert(result == .SUCCESS, "Could not begin command buffer");
 }
 
-rhi_device_end_immediate_submit :: (using s: *RHIDevice) {
+rhi_device_end_immediate_submit :: (using s: *Device) {
 	result := vkEndCommandBuffer(immediateCommandBuffer);
 	assert(result == .SUCCESS, "failed to end command buffer");
 
@@ -442,7 +597,28 @@ submit_info :: ( cmd: *VkCommandBufferSubmitInfo, signal_semaphore_info: *VkSema
 
 #scope_file
 
+// internal types
+
+DESCRIPTOR_POOL_SIZE :: 32;
+
+DescriptorSetPool :: struct {
+	poolSizes: [..]VkDescriptorPoolSize;
+	pools: [..]VkDescriptorPool;
+
+	descriptorSets: [..]VkDescriptorSet;
+	descriptorSetIndex: s32;
+}
+
 // Enum converters
+
+shader_stage_to_vk_shader_stage :: (shaderStage: ShaderStage) -> VkShaderStageFlags {
+	if shaderStage == {
+		case .VERTEX; return .VERTEX_BIT; 
+		case .PIXEL; return .FRAGMENT_BIT; 
+		case .COMPUTE; return .COMPUTE_BIT; 
+		case; return .VERTEX_BIT;
+	}
+}
 
 pixel_format_to_vk_format :: (format: PixelFormat) -> VkFormat {
 	if format == {
@@ -515,9 +691,20 @@ color_mask_to_vk_color_mask :: (colorMask: ColorComponentFlags) -> VkColorCompon
 	return vkMask;
 }
 
+binding_type_to_vk_descriptor_type :: (bindingType: BindingType) -> VkDescriptorType {
+	if bindingType == {
+		case .SAMPLER; return .SAMPLER; 
+		case .SAMPLED_IMAGE; return .SAMPLED_IMAGE; 
+		case .STORAGE_IMAGE; return .STORAGE_IMAGE; 
+		case .UNIFORM_BUFFER; return .UNIFORM_BUFFER; 
+		case .STORAGE_BUFFER; return .STORAGE_BUFFER; 
+		case; return .SAMPLED_IMAGE;
+	}
+}
+
 // init code
 
-init_vulkan :: (state: *RHIDevice) -> bool {
+init_vulkan :: (state: *Device) -> bool {
 	#if VALIDATION_ENABLED 
 	{
 		if !supports_validation_layers() 
@@ -674,7 +861,7 @@ init_vulkan :: (state: *RHIDevice) -> bool {
 	return result == .SUCCESS;
 }
 
-init_swapchain :: (state: *RHIDevice) {
+init_swapchain :: (state: *Device) {
 	using state;
 	
 	swapchain_support := query_swapchain_support(physicalDevice, surface);
@@ -740,7 +927,7 @@ init_swapchain :: (state: *RHIDevice) {
 	depthImage = rhi_device_create_image(state, drawImage.imageExtent, .DEPTH, depthImageUsage);
 }
 
-init_swapchain_image_views :: (state: *RHIDevice) {
+init_swapchain_image_views :: (state: *Device) {
 	using state;
 	
 	array_resize(*swapchainImageViews, swapchainImages.count);
@@ -765,7 +952,7 @@ init_swapchain_image_views :: (state: *RHIDevice) {
 	}
 }
 
-init_commands :: (state: *RHIDevice) {
+init_commands :: (state: *Device) {
 	using state;
 	
 	
@@ -802,7 +989,7 @@ init_commands :: (state: *RHIDevice) {
 	}
 }
 
-init_sync_structures :: (state: *RHIDevice) {
+init_sync_structures :: (state: *Device) {
 	using state;
 
 	fence_create_info := VkFenceCreateInfo.{
@@ -828,7 +1015,7 @@ init_sync_structures :: (state: *RHIDevice) {
 	}
 }
 
-init_descriptors :: (state: *RHIDevice) {
+init_descriptors :: (state: *Device) {
 	using state;
 
 
@@ -858,11 +1045,11 @@ init_descriptors :: (state: *RHIDevice) {
 	}
 }
 
-init_pipelines :: (state: *RHIDevice) {
+init_pipelines :: (state: *Device) {
 	init_background_pipelines(state);
 }
 
-init_background_pipelines :: (state: *RHIDevice) {
+init_background_pipelines :: (state: *Device) {
 	using state;
 	computeLayout: VkPipelineLayoutCreateInfo;
 	computeLayout.pSetLayouts = *drawImageDescriptorLayout;
@@ -915,7 +1102,7 @@ free_imgui :: (ptr: *void, user_data: *void) #c_call
 	}
 }
 
-init_imgui :: (s: *RHIDevice) {
+init_imgui :: (s: *Device) {
 	using s;
 	poolSizes := VkDescriptorPoolSize.[.{.COMBINED_IMAGE_SAMPLER, 1}];
 	poolInfo: VkDescriptorPoolCreateInfo;
@@ -993,7 +1180,7 @@ supports_validation_layers :: () -> bool {
 	return true;
 }
 
-get_required_extensions :: (state: *RHIDevice) -> [..] *u8, bool {
+get_required_extensions :: (state: *Device) -> [..] *u8, bool {
 	required_extensions: [..] *u8;
 	required_extensions.allocator = temp;
 
@@ -1284,19 +1471,6 @@ image_subresource_range :: (aspect_mask: VkImageAspectFlags) -> VkImageSubresour
 }
 
 // createinfos
-
-image_create_info :: (format: VkFormat, usageFlags: VkImageUsageFlags, extent: VkExtent3D) -> VkImageCreateInfo {
-	info: VkImageCreateInfo;
-	info.imageType = .VK_IMAGE_TYPE_2D;
-	info.format = format;
-	info.extent = extent;
-	info.mipLevels = 1;
-	info.arrayLayers = 1;
-	info.samples = .VK_SAMPLE_COUNT_1_BIT;
-	info.tiling = .VK_IMAGE_TILING_OPTIMAL;
-	info.usage = usageFlags;
-	return info;
-}
 
 image_view_create_info :: (format: VkFormat, image: VkImage, aspectFlags: VkImageAspectFlags) -> VkImageViewCreateInfo {
 	info: VkImageViewCreateInfo;

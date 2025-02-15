@@ -6,6 +6,12 @@
     #load "vulkan/vulkan_device.jai";
 }
 
+ShaderStage :: enum {
+	VERTEX;
+	PIXEL;
+	COMPUTE;
+}
+
 Topology :: enum {
     POINT_LIST;
     LINE_LIST;
@@ -78,7 +84,8 @@ DepthStencil :: struct {
 }
 
 MAX_COLOR_TARGETS :: 8;
-PipelineCreateOptions :: struct {
+
+PipelineDesc :: struct {
 	// @todo: temporary before we have bindless, ideally no vk specific stuff in here
 	vkLayout: VkPipelineLayout;
 	vertexShader: Shader;
@@ -91,3 +98,39 @@ PipelineCreateOptions :: struct {
 	depth: DepthStencil;
 }
 
+BindingType :: enum {
+    SAMPLER;
+    SAMPLED_IMAGE;
+    STORAGE_IMAGE;
+    UNIFORM_BUFFER;
+    STORAGE_BUFFER;
+	NUM_BINDING_TYPES;
+}
+
+Binding :: struct {
+	slot: s32;
+	type: BindingType;
+	shaderStage: ShaderStage;
+}
+
+BindGroupLayoutDesc :: struct {
+	bindings: []Binding;
+}
+
+ResourceBind :: struct {
+	slot: s32;
+	texture: Texture;
+	buffer: Buffer;
+	sampler: Sampler;
+}
+
+BindGroupDesc :: struct {
+	layout: BindGroupLayout;
+	resources: []ResourceBind;
+}
+
+SamplerDesc :: struct {
+	// @todo: options!!
+	magFilter: VkFilter;
+	minFilter: VkFilter;
+}
