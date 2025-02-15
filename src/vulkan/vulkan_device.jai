@@ -65,19 +65,6 @@ FrameData :: struct
 	renderFence: VkFence;
 }
 
-AllocatedImage :: struct {
-	image: VkImage;
-	imageView: VkImageView;
-	allocation: VmaAllocation;
-	imageExtent: VkExtent3D;
-	imageFormat: VkFormat;
-}
-
-AllocatedBuffer :: struct {
-	buffer: VkBuffer;
-	allocation: VmaAllocation;
-	info: VmaAllocationInfo;
-}
 
 ComputePushConstants :: struct {
 	data1: Vector4;
@@ -105,8 +92,32 @@ GpuDrawPushConstants :: struct {
 	vertexBuffer: VkDeviceAddress;
 }
 
+// Resources
+
+Shader :: struct {
+	platformShaderHandle: VkShaderModule;
+}
+
+AllocatedImage :: struct {
+	image: VkImage;
+	imageView: VkImageView;
+	allocation: VmaAllocation;
+	imageExtent: VkExtent3D;
+	imageFormat: VkFormat;
+}
+
+AllocatedBuffer :: struct {
+	buffer: VkBuffer;
+	allocation: VmaAllocation;
+	info: VmaAllocationInfo;
+}
+
+// todo: need a compile time, abstract to vk pixel format converter
+
+
+
 // core graphics initialization
-init_graphics_device :: (s: *GfxDevice, window: *SDL_Window, width: s32, height: s32) {
+gfx_device_init :: (s: *GfxDevice, window: *SDL_Window, width: s32, height: s32) {
 	s.window = window;
 	s.width = width;
 	s.height = height;
@@ -125,11 +136,12 @@ init_graphics_device :: (s: *GfxDevice, window: *SDL_Window, width: s32, height:
 	s.pc.data2 = Vector4.{0, 0, 1, 1};
 }
 
-get_current_frame :: (s: *GfxDevice) -> *FrameData
+gfx_device_get_current_frame :: (s: *GfxDevice) -> *FrameData
 {
 	return *s.frames[s.frame_number % s.frames.count];
 }
 
+// @todo: this should be a part of the command buffer functions
 transition_image :: (cmd: VkCommandBuffer, image: VkImage, current_layout: VkImageLayout, new_layout: VkImageLayout) {
 	image_barrier: VkImageMemoryBarrier2;
     image_barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
@@ -151,7 +163,23 @@ transition_image :: (cmd: VkCommandBuffer, image: VkImage, current_layout: VkIma
     vkCmdPipelineBarrier2(cmd, *dep_info);
 }
 
-create_image :: (using s: *GfxDevice, size: VkExtent3D, format: VkFormat, usage: VkImageUsageFlags) -> AllocatedImage {
+gfx_device_create_pipeline :: (using s: *GfxDevice, opts: PipelineCreateOptions) {
+	// @TODO: We want to make a single function like make_pipeline() which takes a struct with all the options
+	// It'll be used with a struct literal to configure your pipeline, and give you back your handle
+	// Load Shader will just become make_shader which can be used directly within the pipeline struct literal.
+	// You then need to make some platform agnostic pipeline handle, which internally just holds the actual vk pipeline handle.
+
+	// The shaders should each define what they bind, an array of push constants, and how many textures or buffers or whatever they need
+	// and then the make pipeline function will generate a layout for them, storing descriptor set layouts or whatever in a hash table for reuse. (see SDL_GPU)
+
+	// since we'll be replacing descriptor sets with bindless, I wouldn't do a lot for them, just allow them to be hard coded in for now
+	// and they'll get removed soon and we can rid ourselves.
+
+	
+	// go through create options, building the ppeline create info and creating it as needed
+}
+
+gfx_device_create_image :: (using s: *GfxDevice, size: VkExtent3D, format: VkFormat, usage: VkImageUsageFlags) -> AllocatedImage {
 
 	image: AllocatedImage;
 	image.imageExtent = size;
@@ -175,15 +203,15 @@ create_image :: (using s: *GfxDevice, size: VkExtent3D, format: VkFormat, usage:
 	return image;
 }
 
-create_image :: (using s: *GfxDevice, data: *void, size: VkExtent3D, format: VkFormat, usage: VkImageUsageFlags) -> AllocatedImage {
+gfx_device_create_image :: (using s: *GfxDevice, data: *void, size: VkExtent3D, format: VkFormat, usage: VkImageUsageFlags) -> AllocatedImage {
 
 	dataSize := size.depth * size.width * size.height * 4;
-	uploadBuffer := create_buffer(s, dataSize, .TRANSFER_SRC_BIT, .CPU_TO_GPU);
+	uploadBuffer := gfx_device_create_buffer(s, dataSize, .TRANSFER_SRC_BIT, .CPU_TO_GPU);
 	memcpy(uploadBuffer.info.pMappedData, data, dataSize);
 
-	image := create_image(s, size, format, usage | .TRANSFER_DST_BIT | .TRANSFER_SRC_BIT);
+	image := gfx_device_create_image(s, size, format, usage | .TRANSFER_DST_BIT | .TRANSFER_SRC_BIT);
 
-	begin_immediate_submit(s);
+	gfx_device_begin_immediate_submit(s);
 
 	transition_image(immediateCommandBuffer, image.image, .UNDEFINED, .TRANSFER_DST_OPTIMAL); 
 
@@ -200,22 +228,22 @@ create_image :: (using s: *GfxDevice, data: *void, size: VkExtent3D, format: VkF
 
 	transition_image(immediateCommandBuffer, image.image, .TRANSFER_DST_OPTIMAL, .SHADER_READ_ONLY_OPTIMAL); 
 
-	end_immediate_submit(s);
+	gfx_device_end_immediate_submit(s);
 	return image;
 }
 
-load_shader_module :: (bytes: []u8, device: VkDevice) -> VkShaderModule {
+gfx_device_create_shader :: (s: *GfxDevice, bytes: []u8) -> Shader {
 	createInfo: VkShaderModuleCreateInfo;
 	createInfo.codeSize = xx bytes.count;
 	createInfo.pCode = cast(*u32) bytes.data;
 
 	shaderModule: VkShaderModule;
-	result := vkCreateShaderModule(device, *createInfo, null, *shaderModule);
+	result := vkCreateShaderModule(s.device, *createInfo, null, *shaderModule);
 	assert(result == .SUCCESS, "Failed to create shader module");
-	return shaderModule;
+	return .{platformShaderHandle = shaderModule};
 }
 
-create_buffer :: (s: *GfxDevice, size: u64, usage: VkBufferUsageFlags, memoryUsage: VmaMemoryUsage) -> AllocatedBuffer {
+gfx_device_create_buffer :: (s: *GfxDevice, size: u64, usage: VkBufferUsageFlags, memoryUsage: VmaMemoryUsage) -> AllocatedBuffer {
 	info: VkBufferCreateInfo;
 	info.size = size;
 	info.usage = usage;
@@ -229,12 +257,12 @@ create_buffer :: (s: *GfxDevice, size: u64, usage: VkBufferUsageFlags, memoryUsa
 	return newBuffer;
 }
 
-destroy_buffer :: (s: *GfxDevice, buffer: *AllocatedBuffer) {
+gfx_device_destroy_buffer :: (s: *GfxDevice, buffer: *AllocatedBuffer) {
 	vmaDestroyBuffer(s.gpuAllocator, buffer.buffer, buffer.allocation);
 }
 
 // evaluate if these functions definitely need to be exposed once more vulkan stuff is removed from main
-begin_immediate_submit :: (using s: *GfxDevice) {
+gfx_device_begin_immediate_submit :: (using s: *GfxDevice) {
 	result := vkResetFences(device, 1, *immediateFence);
 	assert(result == .SUCCESS, "Could not reset fence");
 	result = vkResetCommandBuffer(immediateCommandBuffer, 0);
@@ -246,7 +274,7 @@ begin_immediate_submit :: (using s: *GfxDevice) {
 	assert(result == .SUCCESS, "Could not begin command buffer");
 }
 
-end_immediate_submit :: (using s: *GfxDevice) {
+gfx_device_end_immediate_submit :: (using s: *GfxDevice) {
 	result := vkEndCommandBuffer(immediateCommandBuffer);
 	assert(result == .SUCCESS, "failed to end command buffer");
 
@@ -260,6 +288,7 @@ end_immediate_submit :: (using s: *GfxDevice) {
 	assert(result == .SUCCESS, "Wait For fences failed");
 }
 
+// @todo: should be a function in the command buffer file
 copy_image_to_image :: (cmd: VkCommandBuffer, source: VkImage, destination: VkImage, srcSize: VkExtent2D, dstSize: VkExtent2D) {
 	blitRegion: VkImageBlit2;
 	blitRegion.srcOffsets[1].x = xx srcSize.width;
@@ -536,12 +565,12 @@ init_swapchain :: (state: *GfxDevice) {
 	drawImageUsageFlags |= .TRANSFER_DST_BIT;
 	drawImageUsageFlags |= .STORAGE_BIT;
 	drawImageUsageFlags |= .COLOR_ATTACHMENT_BIT;
-	drawImage = create_image(state, VkExtent3D.{width = WIDTH, height = HEIGHT, depth=1}, .R16G16B16A16_SFLOAT, drawImageUsageFlags);
+	drawImage = gfx_device_create_image(state, VkExtent3D.{width = WIDTH, height = HEIGHT, depth=1}, .R16G16B16A16_SFLOAT, drawImageUsageFlags);
 
 	// init depth
 	depthImageUsage: VkImageUsageFlags;
 	depthImageUsage |= .DEPTH_STENCIL_ATTACHMENT_BIT;
-	depthImage = create_image(state, drawImage.imageExtent, .D32_SFLOAT, depthImageUsage);
+	depthImage = gfx_device_create_image(state, drawImage.imageExtent, .D32_SFLOAT, depthImageUsage);
 }
 
 init_swapchain_image_views :: (state: *GfxDevice) {
@@ -684,7 +713,7 @@ init_background_pipelines :: (state: *GfxDevice) {
 	// compile time load the shader binary
 	// @todo potentially you can auto create these constants in the build code for each filename that gets compiled
 	GRADIENT_SHADER :: #run SHADER_GET("gradient.comp");
-	computeDrawShader := load_shader_module(GRADIENT_SHADER, device);
+	computeDrawShader := gfx_device_load_shader_module(GRADIENT_SHADER, device);
 
 	stageInfo: VkPipelineShaderStageCreateInfo;
 	stageInfo.stage = .COMPUTE_BIT;
