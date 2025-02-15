@@ -6,7 +6,7 @@
 #import "Math";
 #import "stb_image";
 
-#load "gfx_device.jai";
+#load "rhi_device.jai";
 
 
 WIDTH :: 800;
@@ -29,6 +29,11 @@ HEIGHT :: 600;
 // wait_for_swapchain_texture() -- acquires a swapchain texture for rendering into. As with SDL, when this occurs, automatically present when the command buffer is submitted
 // all the things you can do with a command buffer
 
+RendererState :: struct {
+	device: RHIDevice;
+	meshPipeline: Pipeline;
+}
+
 main :: () {
 	context.logger = logger;
 
@@ -46,8 +51,8 @@ main :: () {
 		log_error("Could not create window: %\n", to_string(SDL_GetError()));
 	}
 
-	device: GfxDevice;
-	gfx_device_init(*device, window, WIDTH, HEIGHT);
+	device: RHIDevice;
+	rhi_device_init(*device, window, WIDTH, HEIGHT);
 	init_mesh_pipeline(*device);
 	init_cube_mesh(*device);
 
@@ -73,14 +78,14 @@ main :: () {
 	}
 }
 
-init_mesh_pipeline :: (using s: *GfxDevice) {
+init_mesh_pipeline :: (using s: *RHIDevice) {
 	// load the texture for the cube
 	{
 		x, y: s32;
 		comp: s32;
 		imageData: *u8 = stbi_load("crate.png", *x, *y, *comp, 4);
 
-		crateTexture = gfx_device_create_image(s, imageData, VkExtent3D.{width = xx x, height = xx y, depth=1}, .R8G8B8A8_UNORM, .SAMPLED_BIT);
+		crateTexture = rhi_device_create_image(s, imageData, VkExtent3D.{width = xx x, height = xx y, depth=1}, .RGBA8, .SAMPLED_BIT);
 	}
 
 	samplerInfo := VkSamplerCreateInfo.{magFilter = .LINEAR, minFilter= .LINEAR};
@@ -108,12 +113,6 @@ init_mesh_pipeline :: (using s: *GfxDevice) {
 		vkUpdateDescriptorSets(device, 1, *imageWrite, 0, null);
 	}
 
-	VERT :: #run SHADER_GET("colored_triangle_mesh.vert");
-	vertShader := gfx_device_create_shader(s, VERT);
-	// @todo this is duplicated above, something to improve
-	FRAG :: #run SHADER_GET("colored_triangle.frag");
-	fragShader := gfx_device_create_shader(s, FRAG);
-
 	pushConstant: VkPushConstantRange;
 	pushConstant.offset = 0;
 	pushConstant.size = size_of(GpuDrawPushConstants);
@@ -128,10 +127,10 @@ init_mesh_pipeline :: (using s: *GfxDevice) {
 
 	vkCreatePipelineLayout(device, *meshPipelineLayoutCreateInfo, null, *meshPipelineLayout);
 
-	meshPipeline := gfx_device_create_pipeline(s, .{
+	meshPipeline = rhi_device_create_pipeline(s, .{
 		vkLayout = meshPipelineLayout,
-		vertexShader = gfx_device_create_shader(s, #run SHADER_GET("colored_triangle_mesh.vert")),
-		fragmentShader = gfx_device_create_shader(s, #run SHADER_GET("colored_triangle.frag")),
+		vertexShader = rhi_device_create_shader(s, #run SHADER_GET("colored_triangle_mesh.vert")),
+		fragmentShader = rhi_device_create_shader(s, #run SHADER_GET("colored_triangle.frag")),
 		topology = .TRIANGLE_LIST,
 		rasterizer = .{
 			polygonMode = .FILL,
@@ -149,25 +148,9 @@ init_mesh_pipeline :: (using s: *GfxDevice) {
 			compareOp = .GREATER_OR_EQUAL
 		}
 	});
-
-	builder: PipelineBuilder;
-	builder.pipelineLayout = meshPipelineLayout; // done
-	builder.inputAssembly.topology = .TRIANGLE_LIST; // done
-	builder.rasterizer.polygonMode = .FILL; // done
-	builder.rasterizer.cullMode = .NONE; // done
-	builder.rasterizer.frontFace = .CLOCKWISE; // done
-	builder.rasterizer.depthClampEnable = VK_TRUE; // done
-	builder_set_shaders(*builder, vertShader, fragShader); // done
-	builder_set_multisample_none(*builder); // not needed
-	builder_disable_blending(*builder); // not needed
-	builder_enable_depthtest(*builder, true, .GREATER_OR_EQUAL);
-	builder_set_color_attachment_format(*builder, drawImage.imageFormat); // done
-	builder_set_depth_attachment_format(*builder, depthImage.imageFormat); // done
-
-	meshPipeline = build_pipeline(*builder, s);
 }
 
-init_cube_mesh :: (using s: *GfxDevice) {
+init_cube_mesh :: (using s: *RHIDevice) {
 	cubeVerts : [8]Vertex;
 	
 	// front side
@@ -236,30 +219,30 @@ init_cube_mesh :: (using s: *GfxDevice) {
 	cubeMesh = upload_mesh(s, cubeIndices, cubeVerts);
 }
 
-upload_mesh :: (s: *GfxDevice, indices: []u32, vertices: []Vertex) -> GpuMeshBuffers {
+upload_mesh :: (s: *RHIDevice, indices: []u32, vertices: []Vertex) -> GpuMeshBuffers {
 	vertexBufferSize := vertices.count * size_of(Vertex);
 	indexBufferSize := indices.count * size_of(u32);
 
 	mesh: GpuMeshBuffers;
 
-	mesh.vertexBuffer = gfx_device_create_buffer(s, xx vertexBufferSize, .STORAGE_BUFFER_BIT | .TRANSFER_DST_BIT | .SHADER_DEVICE_ADDRESS_BIT, .GPU_ONLY);
+	mesh.vertexBuffer = rhi_device_create_buffer(s, xx vertexBufferSize, .STORAGE_BUFFER_BIT | .TRANSFER_DST_BIT | .SHADER_DEVICE_ADDRESS_BIT, .GPU_ONLY);
 
 	deviceAddressInfo: VkBufferDeviceAddressInfo;
 	deviceAddressInfo.buffer = mesh.vertexBuffer.buffer;
 	mesh.deviceAddress = vkGetBufferDeviceAddress(s.device, *deviceAddressInfo);
 
-	mesh.indexBuffer = gfx_device_create_buffer(s, xx indexBufferSize, .INDEX_BUFFER_BIT | .TRANSFER_DST_BIT, .GPU_ONLY);
+	mesh.indexBuffer = rhi_device_create_buffer(s, xx indexBufferSize, .INDEX_BUFFER_BIT | .TRANSFER_DST_BIT, .GPU_ONLY);
 
 	// here's where the actual data upload happens
 	// it's doing a full immediate submit, should research how to do this better
-	staging := gfx_device_create_buffer(s, xx (vertexBufferSize + indexBufferSize), .TRANSFER_SRC_BIT, .CPU_ONLY);
+	staging := rhi_device_create_buffer(s, xx (vertexBufferSize + indexBufferSize), .TRANSFER_SRC_BIT, .CPU_ONLY);
 
 	data := staging.info.pMappedData;
 
 	memcpy(data, vertices.data, vertexBufferSize);
 	memcpy(cast(*u8)data + vertexBufferSize, indices.data, indexBufferSize);
 
-	gfx_device_begin_immediate_submit(s);
+	rhi_device_begin_immediate_submit(s);
 
 	vertexCopy: VkBufferCopy;
 	vertexCopy.dstOffset = 0;
@@ -273,11 +256,11 @@ upload_mesh :: (s: *GfxDevice, indices: []u32, vertices: []Vertex) -> GpuMeshBuf
 	indexCopy.size = xx indexBufferSize;
 	vkCmdCopyBuffer(s.immediateCommandBuffer, staging.buffer, mesh.indexBuffer.buffer, 1, *indexCopy);
 
-	gfx_device_end_immediate_submit(s);
+	rhi_device_end_immediate_submit(s);
 	return mesh;
 }
 
-draw :: (s: *GfxDevice) {
+draw :: (s: *RHIDevice) {
 	ImGui_ImplVulkan_NewFrame();
 	ImGui_ImplSDL2_NewFrame();
 	ImGui.NewFrame();
@@ -297,15 +280,15 @@ draw :: (s: *GfxDevice) {
 
 
 	ONE_SECOND_IN_NS :: 1000000000;
-	vkWaitForFences(s.device, 1, *gfx_device_get_current_frame(s).renderFence, VK_TRUE, ONE_SECOND_IN_NS);
-	vkResetFences(s.device, 1, *gfx_device_get_current_frame(s).renderFence);
+	vkWaitForFences(s.device, 1, *rhi_device_get_current_frame(s).renderFence, VK_TRUE, ONE_SECOND_IN_NS);
+	vkResetFences(s.device, 1, *rhi_device_get_current_frame(s).renderFence);
 
 	swapchain_image_index: u32;
 	vkAcquireNextImageKHR(
 		s.device, 
 		s.swapchain, 
 		ONE_SECOND_IN_NS, 
-		gfx_device_get_current_frame(s).swapchainSemaphore, 
+		rhi_device_get_current_frame(s).swapchainSemaphore, 
 		null, 
 		*swapchain_image_index
 	);
@@ -314,7 +297,7 @@ draw :: (s: *GfxDevice) {
 		flags = .ONE_TIME_SUBMIT_BIT
 	};
 
-	cmd := gfx_device_get_current_frame(s).mainCommandBuffer;
+	cmd := rhi_device_get_current_frame(s).mainCommandBuffer;
 	vkResetCommandBuffer(cmd, 0);
 
 	s.drawExtent.width = s.drawImage.imageExtent.width;
@@ -379,16 +362,16 @@ draw :: (s: *GfxDevice) {
 
 	cmd_info := command_buffer_submit_info(cmd);
 
-	wait_info := semaphore_submit_info( VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR, gfx_device_get_current_frame(s).swapchainSemaphore);
-	signal_info := semaphore_submit_info( VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, gfx_device_get_current_frame(s).renderSempahore);
+	wait_info := semaphore_submit_info( VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR, rhi_device_get_current_frame(s).swapchainSemaphore);
+	signal_info := semaphore_submit_info( VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, rhi_device_get_current_frame(s).renderSempahore);
 
 	submit := submit_info(*cmd_info, *signal_info, *wait_info);
-	vkQueueSubmit2(s.graphicsQueue, 1, *submit, gfx_device_get_current_frame(s).renderFence);
+	vkQueueSubmit2(s.graphicsQueue, 1, *submit, rhi_device_get_current_frame(s).renderFence);
 
 	present_info := VkPresentInfoKHR.{
 		pSwapchains = *s.swapchain,
 		swapchainCount = 1,
-		pWaitSemaphores = *gfx_device_get_current_frame(s).renderSempahore,
+		pWaitSemaphores = *rhi_device_get_current_frame(s).renderSempahore,
 		waitSemaphoreCount = 1,
 		pImageIndices = *swapchain_image_index
 	};
@@ -396,7 +379,7 @@ draw :: (s: *GfxDevice) {
 	s.frame_number += 1;
 }
 
-draw_geometry :: (cmd: VkCommandBuffer, s: *GfxDevice) {
+draw_geometry :: (cmd: VkCommandBuffer, s: *RHIDevice) {
 	colorAttachment: VkRenderingAttachmentInfo;
 	colorAttachment.imageView = s.drawImage.imageView;
 	colorAttachment.imageLayout = .COLOR_ATTACHMENT_OPTIMAL;
@@ -437,12 +420,8 @@ draw_geometry :: (cmd: VkCommandBuffer, s: *GfxDevice) {
 
 	vkCmdSetScissor(cmd, 0, 1, *scissor);
 
-	// draw triangle
-	// vkCmdBindPipeline(cmd, .GRAPHICS, s.trianglePipeline);
-	// vkCmdDraw(cmd, 3, 1, 0, 0);
-
 	// draw mesh cube
-	vkCmdBindPipeline(cmd, .GRAPHICS, s.meshPipeline);
+	vkCmdBindPipeline(cmd, .GRAPHICS, s.meshPipeline.platformHandle);
 	vkCmdBindDescriptorSets(cmd, .GRAPHICS, s.meshPipelineLayout, 0, 1, *s.textureDescriptorSet, 0, null);
 
 	projection := make_projection_matrix(60.0 * PI / 180.0, cast(float)WIDTH/cast(float)HEIGHT, 1000.0, 0.01, 0.0, 0.0, true);

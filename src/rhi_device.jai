@@ -41,9 +41,10 @@ RasterizerDesc :: struct {
 
 PixelFormat :: enum {
 	// create formats as needed
-	R8G8B8A8_UNORM;
-	R16G16B16A16_SFLOAT;
-	D32_SFLOAT;
+	UNDEFINED;
+	RGBA8;
+	RGBA16F;
+	DEPTH;
 }
 
 ColorComponentFlags :: enum_flags {
@@ -52,6 +53,7 @@ ColorComponentFlags :: enum_flags {
     B :: 0x4;
     A :: 0x8;
 }
+
 ColorTarget :: struct {
 	format: PixelFormat;
 	colorWriteMask: ColorComponentFlags = .R | .G | .B | .A;

@@ -1,6 +1,6 @@
 
 // Types
-GfxDevice :: struct {
+RHIDevice :: struct {
 	window: *SDL_Window;
 	width: s32;
 	height: s32;
@@ -28,12 +28,12 @@ GfxDevice :: struct {
 	imguiDescriptorPool: VkDescriptorPool;
 
 	gradientPipeline: VkPipeline;
-	gradientPipelineLayout: VkPipelineLayout;
+gradientPipelineLayout: VkPipelineLayout;
 
 	trianglePipeline: VkPipeline;
 	trianglePipelineLayout: VkPipelineLayout;
 
-	meshPipeline: VkPipeline;
+	meshPipeline: Pipeline;
 	meshPipelineLayout: VkPipelineLayout;
 	cubeMesh: GpuMeshBuffers;
 	crateTexture: AllocatedImage;
@@ -94,16 +94,22 @@ GpuDrawPushConstants :: struct {
 
 // Resources
 
+Pipeline :: struct {
+	platformHandle: VkPipeline;
+}
+
 Shader :: struct {
-	platformShaderHandle: VkShaderModule;
+	platformHandle: VkShaderModule;
 }
 
 AllocatedImage :: struct {
+	imageFormat: PixelFormat;
+
+	// backend specific handles
 	image: VkImage;
 	imageView: VkImageView;
 	allocation: VmaAllocation;
 	imageExtent: VkExtent3D;
-	imageFormat: VkFormat;
 }
 
 AllocatedBuffer :: struct {
@@ -112,12 +118,12 @@ AllocatedBuffer :: struct {
 	info: VmaAllocationInfo;
 }
 
-// todo: need a compile time, abstract to vk pixel format converter
 
 
+// rhi api
 
 // core graphics initialization
-gfx_device_init :: (s: *GfxDevice, window: *SDL_Window, width: s32, height: s32) {
+rhi_device_init :: (s: *RHIDevice, window: *SDL_Window, width: s32, height: s32) {
 	s.window = window;
 	s.width = width;
 	s.height = height;
@@ -136,7 +142,7 @@ gfx_device_init :: (s: *GfxDevice, window: *SDL_Window, width: s32, height: s32)
 	s.pc.data2 = Vector4.{0, 0, 1, 1};
 }
 
-gfx_device_get_current_frame :: (s: *GfxDevice) -> *FrameData
+rhi_device_get_current_frame :: (s: *RHIDevice) -> *FrameData
 {
 	return *s.frames[s.frame_number % s.frames.count];
 }
@@ -163,29 +169,115 @@ transition_image :: (cmd: VkCommandBuffer, image: VkImage, current_layout: VkIma
     vkCmdPipelineBarrier2(cmd, *dep_info);
 }
 
-gfx_device_create_pipeline :: (using s: *GfxDevice, opts: PipelineCreateOptions) {
-	// @TODO: We want to make a single function like make_pipeline() which takes a struct with all the options
-	// It'll be used with a struct literal to configure your pipeline, and give you back your handle
-	// Load Shader will just become make_shader which can be used directly within the pipeline struct literal.
-	// You then need to make some platform agnostic pipeline handle, which internally just holds the actual vk pipeline handle.
+rhi_device_create_pipeline :: (using s: *RHIDevice, opts: PipelineCreateOptions) -> Pipeline {
+	pipelineInfo: VkGraphicsPipelineCreateInfo;
+	pipelineInfo.layout = opts.vkLayout;
 
-	// The shaders should each define what they bind, an array of push constants, and how many textures or buffers or whatever they need
-	// and then the make pipeline function will generate a layout for them, storing descriptor set layouts or whatever in a hash table for reuse. (see SDL_GPU)
+	renderInfo: VkPipelineRenderingCreateInfo;
+	colorTargetFormats: [MAX_COLOR_TARGETS]VkFormat;
+	for 0..opts.colorTargetCount-1 {
+		colorTargetFormats[it] = pixel_format_to_vk_format(opts.colorTargets[it].format);
+	}
+	renderInfo.colorAttachmentCount = xx opts.colorTargetCount;
+	renderInfo.pColorAttachmentFormats = colorTargetFormats.data;
+	renderInfo.depthAttachmentFormat = pixel_format_to_vk_format(opts.depthTargetFormat);
+	pipelineInfo.pNext = *renderInfo;
 
-	// since we'll be replacing descriptor sets with bindless, I wouldn't do a lot for them, just allow them to be hard coded in for now
-	// and they'll get removed soon and we can rid ourselves.
+	shaderStages: [2]VkPipelineShaderStageCreateInfo;
+	shaderStages[0].stage = .VERTEX_BIT;
+	shaderStages[0].module = opts.vertexShader.platformHandle;
+	shaderStages[0].pName = "main";
+	shaderStages[1].stage = .FRAGMENT_BIT;
+	shaderStages[1].module = opts.fragmentShader.platformHandle;
+	shaderStages[1].pName = "main";
+	pipelineInfo.stageCount = shaderStages.count;
+	pipelineInfo.pStages = shaderStages.data;
 
+	vertexInputInfo: VkPipelineVertexInputStateCreateInfo;
+	pipelineInfo.pVertexInputState = *vertexInputInfo;
+
+	inputAssembly: VkPipelineInputAssemblyStateCreateInfo;
+	inputAssembly.primitiveRestartEnable = VK_FALSE;
+	inputAssembly.topology = topology_to_vk_topology(opts.topology);
+	pipelineInfo.pInputAssemblyState = *inputAssembly;
+
+	viewportState: VkPipelineViewportStateCreateInfo;
+	viewportState.viewportCount = 1;
+	viewportState.scissorCount = 1;
+	pipelineInfo.pViewportState = *viewportState;
 	
-	// go through create options, building the ppeline create info and creating it as needed
+	rasterizer: VkPipelineRasterizationStateCreateInfo;
+	rasterizer.polygonMode = polygon_mode_to_vk_polygon_mode(opts.rasterizer.polygonMode);
+	rasterizer.cullMode = cull_mode_to_vk_cull_mode(opts.rasterizer.cullMode);
+	rasterizer.frontFace = front_face_to_vk_front_face(opts.rasterizer.frontFace); 
+	rasterizer.depthClampEnable = VK_FALSE;
+	rasterizer.lineWidth = 1;
+	pipelineInfo.pRasterizationState = *rasterizer;
+
+	multisampling: VkPipelineMultisampleStateCreateInfo;
+	multisampling.sampleShadingEnable = VK_FALSE;
+	multisampling.rasterizationSamples = .VK_SAMPLE_COUNT_1_BIT;
+	multisampling.minSampleShading = 1.0;
+	multisampling.pSampleMask = null;
+	multisampling.alphaToCoverageEnable = VK_FALSE;
+	multisampling.alphaToOneEnable = VK_FALSE;
+	pipelineInfo.pMultisampleState = *multisampling;
+
+	colorBlending: VkPipelineColorBlendStateCreateInfo;
+	colorBlending.logicOpEnable = VK_FALSE;
+	colorBlending.logicOp = .COPY;
+	colorBlendAttachments: [MAX_COLOR_TARGETS]VkPipelineColorBlendAttachmentState;
+	for 0..opts.colorTargetCount-1 {
+		colorBlendAttachments[it].colorWriteMask = color_mask_to_vk_color_mask(opts.colorTargets[it].colorWriteMask);
+		colorBlendAttachments[it].blendEnable = VK_FALSE;
+	}
+	colorBlending.attachmentCount = xx opts.colorTargetCount;
+	colorBlending.pAttachments = colorBlendAttachments.data;
+	pipelineInfo.pColorBlendState = *colorBlending;
+
+	depthStencil: VkPipelineDepthStencilStateCreateInfo;
+	depthStencil.depthTestEnable =  cast(VkBool32) opts.depth.depthTestEnabled;
+	depthStencil.depthWriteEnable = cast(VkBool32) opts.depth.depthWriteEnabled;
+	depthStencil.depthCompareOp = compare_op_to_vk_compare_op(opts.depth.compareOp);
+	depthStencil.depthBoundsTestEnable = VK_FALSE;
+	depthStencil.stencilTestEnable = cast(VkBool32) opts.depth.stencilTestEnabled;
+	depthStencil.front = .{};
+	depthStencil.back = .{};
+	depthStencil.minDepthBounds = 0.0;
+	depthStencil.maxDepthBounds = 1.0;
+	pipelineInfo.pDepthStencilState = *depthStencil;
+
+	state: []VkDynamicState = .[.VIEWPORT, .SCISSOR];
+	dynamicInfo: VkPipelineDynamicStateCreateInfo;
+	dynamicInfo.pDynamicStates = state.data;
+	dynamicInfo.dynamicStateCount = xx state.count;
+	pipelineInfo.pDynamicState = *dynamicInfo;
+
+	pipeline: Pipeline;
+	if vkCreateGraphicsPipelines(s.device, VK_NULL_HANDLE, 1, *pipelineInfo, null, *pipeline.platformHandle) == .SUCCESS {
+		return pipeline;
+	}
+
+	// @todo: should probably crash the program here tbh
+	print("Failed to create pipeline");
+	return pipeline;
 }
 
-gfx_device_create_image :: (using s: *GfxDevice, size: VkExtent3D, format: VkFormat, usage: VkImageUsageFlags) -> AllocatedImage {
+rhi_device_create_image :: (using s: *RHIDevice, size: VkExtent3D, format: PixelFormat, usage: VkImageUsageFlags) -> AllocatedImage {
 
 	image: AllocatedImage;
 	image.imageExtent = size;
 	image.imageFormat = format; 
 
-	imageInfo := image_create_info(image.imageFormat, usage, image.imageExtent);
+	imageInfo: VkImageCreateInfo;
+	imageInfo.imageType = .VK_IMAGE_TYPE_2D;
+	imageInfo.format = pixel_format_to_vk_format(format);
+	imageInfo.extent = size;
+	imageInfo.mipLevels = 1;
+	imageInfo.arrayLayers = 1;
+	imageInfo.samples = .VK_SAMPLE_COUNT_1_BIT;
+	imageInfo.tiling = .VK_IMAGE_TILING_OPTIMAL;
+	imageInfo.usage = usage;
 
 	imgAllocInfo: VmaAllocationCreateInfo;
 	imgAllocInfo.usage = .GPU_ONLY;
@@ -194,24 +286,24 @@ gfx_device_create_image :: (using s: *GfxDevice, size: VkExtent3D, format: VkFor
 	vmaCreateImage(gpuAllocator, *imageInfo, *imgAllocInfo, *image.image, *image.allocation, null);
 
 	aspectFlag: VkImageAspectFlags = .COLOR_BIT;
-	if format == .D32_SFLOAT {
+	if format == .DEPTH {
 		aspectFlag = .DEPTH_BIT;
 	}
-	imageViewInfo := image_view_create_info(image.imageFormat, image.image, aspectFlag);
+	imageViewInfo := image_view_create_info(imageInfo.format, image.image, aspectFlag);
 
 	vkCreateImageView(device, *imageViewInfo, null, *image.imageView);
 	return image;
 }
 
-gfx_device_create_image :: (using s: *GfxDevice, data: *void, size: VkExtent3D, format: VkFormat, usage: VkImageUsageFlags) -> AllocatedImage {
+rhi_device_create_image :: (using s: *RHIDevice, data: *void, size: VkExtent3D, format: PixelFormat, usage: VkImageUsageFlags) -> AllocatedImage {
 
 	dataSize := size.depth * size.width * size.height * 4;
-	uploadBuffer := gfx_device_create_buffer(s, dataSize, .TRANSFER_SRC_BIT, .CPU_TO_GPU);
+	uploadBuffer := rhi_device_create_buffer(s, dataSize, .TRANSFER_SRC_BIT, .CPU_TO_GPU);
 	memcpy(uploadBuffer.info.pMappedData, data, dataSize);
 
-	image := gfx_device_create_image(s, size, format, usage | .TRANSFER_DST_BIT | .TRANSFER_SRC_BIT);
+	image := rhi_device_create_image(s, size, format, usage | .TRANSFER_DST_BIT | .TRANSFER_SRC_BIT);
 
-	gfx_device_begin_immediate_submit(s);
+	rhi_device_begin_immediate_submit(s);
 
 	transition_image(immediateCommandBuffer, image.image, .UNDEFINED, .TRANSFER_DST_OPTIMAL); 
 
@@ -228,11 +320,11 @@ gfx_device_create_image :: (using s: *GfxDevice, data: *void, size: VkExtent3D, 
 
 	transition_image(immediateCommandBuffer, image.image, .TRANSFER_DST_OPTIMAL, .SHADER_READ_ONLY_OPTIMAL); 
 
-	gfx_device_end_immediate_submit(s);
+	rhi_device_end_immediate_submit(s);
 	return image;
 }
 
-gfx_device_create_shader :: (s: *GfxDevice, bytes: []u8) -> Shader {
+rhi_device_create_shader :: (s: *RHIDevice, bytes: []u8) -> Shader {
 	createInfo: VkShaderModuleCreateInfo;
 	createInfo.codeSize = xx bytes.count;
 	createInfo.pCode = cast(*u32) bytes.data;
@@ -240,10 +332,10 @@ gfx_device_create_shader :: (s: *GfxDevice, bytes: []u8) -> Shader {
 	shaderModule: VkShaderModule;
 	result := vkCreateShaderModule(s.device, *createInfo, null, *shaderModule);
 	assert(result == .SUCCESS, "Failed to create shader module");
-	return .{platformShaderHandle = shaderModule};
+	return .{platformHandle = shaderModule};
 }
 
-gfx_device_create_buffer :: (s: *GfxDevice, size: u64, usage: VkBufferUsageFlags, memoryUsage: VmaMemoryUsage) -> AllocatedBuffer {
+rhi_device_create_buffer :: (s: *RHIDevice, size: u64, usage: VkBufferUsageFlags, memoryUsage: VmaMemoryUsage) -> AllocatedBuffer {
 	info: VkBufferCreateInfo;
 	info.size = size;
 	info.usage = usage;
@@ -257,12 +349,12 @@ gfx_device_create_buffer :: (s: *GfxDevice, size: u64, usage: VkBufferUsageFlags
 	return newBuffer;
 }
 
-gfx_device_destroy_buffer :: (s: *GfxDevice, buffer: *AllocatedBuffer) {
+rhi_device_destroy_buffer :: (s: *RHIDevice, buffer: *AllocatedBuffer) {
 	vmaDestroyBuffer(s.gpuAllocator, buffer.buffer, buffer.allocation);
 }
 
 // evaluate if these functions definitely need to be exposed once more vulkan stuff is removed from main
-gfx_device_begin_immediate_submit :: (using s: *GfxDevice) {
+rhi_device_begin_immediate_submit :: (using s: *RHIDevice) {
 	result := vkResetFences(device, 1, *immediateFence);
 	assert(result == .SUCCESS, "Could not reset fence");
 	result = vkResetCommandBuffer(immediateCommandBuffer, 0);
@@ -274,7 +366,7 @@ gfx_device_begin_immediate_submit :: (using s: *GfxDevice) {
 	assert(result == .SUCCESS, "Could not begin command buffer");
 }
 
-gfx_device_end_immediate_submit :: (using s: *GfxDevice) {
+rhi_device_end_immediate_submit :: (using s: *RHIDevice) {
 	result := vkEndCommandBuffer(immediateCommandBuffer);
 	assert(result == .SUCCESS, "failed to end command buffer");
 
@@ -350,7 +442,82 @@ submit_info :: ( cmd: *VkCommandBufferSubmitInfo, signal_semaphore_info: *VkSema
 
 #scope_file
 
-init_vulkan :: (state: *GfxDevice) -> bool {
+// Enum converters
+
+pixel_format_to_vk_format :: (format: PixelFormat) -> VkFormat {
+	if format == {
+		case .RGBA8; return .R8G8B8A8_UNORM;
+		case .RGBA16F; return .R16G16B16A16_SFLOAT;
+		case .DEPTH; return .D32_SFLOAT;
+		case; return .UNDEFINED;
+	}
+}
+
+topology_to_vk_topology :: (topology: Topology) -> VkPrimitiveTopology {
+	if topology == {
+		case .POINT_LIST; return .POINT_LIST; 
+		case .LINE_LIST; return .LINE_LIST; 
+		case .LINE_STRIP; return .LINE_STRIP; 
+		case .TRIANGLE_LIST; return .TRIANGLE_LIST; 
+		case .TRIANGLE_STRIP; return .TRIANGLE_STRIP; 
+		case .TRIANGLE_FAN; return .TRIANGLE_FAN; 
+		case; return .TRIANGLE_LIST;
+	}
+}
+
+polygon_mode_to_vk_polygon_mode :: (polygonMode: PolygonMode) -> VkPolygonMode {
+	if polygonMode == {
+		case .FILL; return .FILL; 
+		case .LINE; return .LINE; 
+		case .POINT; return .POINT; 
+		case; return .FILL;
+	}
+}
+
+cull_mode_to_vk_cull_mode :: (cullMode: CullMode) -> VkCullModeFlagBits {
+	if cullMode == {
+		case .NONE; return .NONE; 
+		case .FRONT; return .FRONT_BIT; 
+		case .BACK; return .BACK_BIT; 
+		case .FRONT_AND_BACK; return .FRONT_AND_BACK; 
+		case; return .NONE;
+	}
+}
+
+front_face_to_vk_front_face :: (frontFace: FrontFace) -> VkFrontFace {
+	if frontFace == {
+		case .COUNTER_CLOCKWISE; return .COUNTER_CLOCKWISE; 
+		case .CLOCKWISE; return .CLOCKWISE; 
+		case; return .CLOCKWISE;
+	}
+}
+
+compare_op_to_vk_compare_op :: (compareOp: CompareOp) -> VkCompareOp {
+	if compareOp == {
+		case .NEVER; return .NEVER; 
+		case .LESS; return .LESS; 
+		case .EQUAL; return .EQUAL; 
+		case .LESS_OR_EQUAL; return .LESS_OR_EQUAL; 
+		case .GREATER; return .GREATER; 
+		case .NOT_EQUAL; return .NOT_EQUAL; 
+		case .GREATER_OR_EQUAL; return .GREATER_OR_EQUAL; 
+		case .ALWAYS; return .ALWAYS; 
+		case; return .NEVER;
+	}
+}
+
+color_mask_to_vk_color_mask :: (colorMask: ColorComponentFlags) -> VkColorComponentFlags {
+	vkMask: VkColorComponentFlags;
+	if colorMask & .R then vkMask |= .R_BIT;
+	if colorMask & .G then vkMask |= .G_BIT;
+	if colorMask & .B then vkMask |= .B_BIT;
+	if colorMask & .A then vkMask |= .A_BIT;
+	return vkMask;
+}
+
+// init code
+
+init_vulkan :: (state: *RHIDevice) -> bool {
 	#if VALIDATION_ENABLED 
 	{
 		if !supports_validation_layers() 
@@ -507,7 +674,7 @@ init_vulkan :: (state: *GfxDevice) -> bool {
 	return result == .SUCCESS;
 }
 
-init_swapchain :: (state: *GfxDevice) {
+init_swapchain :: (state: *RHIDevice) {
 	using state;
 	
 	swapchain_support := query_swapchain_support(physicalDevice, surface);
@@ -565,15 +732,15 @@ init_swapchain :: (state: *GfxDevice) {
 	drawImageUsageFlags |= .TRANSFER_DST_BIT;
 	drawImageUsageFlags |= .STORAGE_BIT;
 	drawImageUsageFlags |= .COLOR_ATTACHMENT_BIT;
-	drawImage = gfx_device_create_image(state, VkExtent3D.{width = WIDTH, height = HEIGHT, depth=1}, .R16G16B16A16_SFLOAT, drawImageUsageFlags);
+	drawImage = rhi_device_create_image(state, VkExtent3D.{width = WIDTH, height = HEIGHT, depth=1}, .RGBA16F, drawImageUsageFlags);
 
 	// init depth
 	depthImageUsage: VkImageUsageFlags;
 	depthImageUsage |= .DEPTH_STENCIL_ATTACHMENT_BIT;
-	depthImage = gfx_device_create_image(state, drawImage.imageExtent, .D32_SFLOAT, depthImageUsage);
+	depthImage = rhi_device_create_image(state, drawImage.imageExtent, .DEPTH, depthImageUsage);
 }
 
-init_swapchain_image_views :: (state: *GfxDevice) {
+init_swapchain_image_views :: (state: *RHIDevice) {
 	using state;
 	
 	array_resize(*swapchainImageViews, swapchainImages.count);
@@ -598,7 +765,7 @@ init_swapchain_image_views :: (state: *GfxDevice) {
 	}
 }
 
-init_commands :: (state: *GfxDevice) {
+init_commands :: (state: *RHIDevice) {
 	using state;
 	
 	
@@ -635,7 +802,7 @@ init_commands :: (state: *GfxDevice) {
 	}
 }
 
-init_sync_structures :: (state: *GfxDevice) {
+init_sync_structures :: (state: *RHIDevice) {
 	using state;
 
 	fence_create_info := VkFenceCreateInfo.{
@@ -661,7 +828,7 @@ init_sync_structures :: (state: *GfxDevice) {
 	}
 }
 
-init_descriptors :: (state: *GfxDevice) {
+init_descriptors :: (state: *RHIDevice) {
 	using state;
 
 
@@ -691,11 +858,11 @@ init_descriptors :: (state: *GfxDevice) {
 	}
 }
 
-init_pipelines :: (state: *GfxDevice) {
+init_pipelines :: (state: *RHIDevice) {
 	init_background_pipelines(state);
 }
 
-init_background_pipelines :: (state: *GfxDevice) {
+init_background_pipelines :: (state: *RHIDevice) {
 	using state;
 	computeLayout: VkPipelineLayoutCreateInfo;
 	computeLayout.pSetLayouts = *drawImageDescriptorLayout;
@@ -713,11 +880,11 @@ init_background_pipelines :: (state: *GfxDevice) {
 	// compile time load the shader binary
 	// @todo potentially you can auto create these constants in the build code for each filename that gets compiled
 	GRADIENT_SHADER :: #run SHADER_GET("gradient.comp");
-	computeDrawShader := gfx_device_load_shader_module(GRADIENT_SHADER, device);
+	computeDrawShader := rhi_device_create_shader(state, GRADIENT_SHADER);
 
 	stageInfo: VkPipelineShaderStageCreateInfo;
 	stageInfo.stage = .COMPUTE_BIT;
-	stageInfo.module = computeDrawShader;
+	stageInfo.module = computeDrawShader.platformHandle;
 	stageInfo.pName = "main";
 
 	computePipelineCreateInfo: VkComputePipelineCreateInfo;
@@ -727,7 +894,7 @@ init_background_pipelines :: (state: *GfxDevice) {
 	result := vkCreateComputePipelines(device, null, 1, *computePipelineCreateInfo, null, *gradientPipeline);
 	assert(result == .SUCCESS, "Failed to create compute pipeline");
 
-	vkDestroyShaderModule(device, computeDrawShader, null);
+	vkDestroyShaderModule(device, computeDrawShader.platformHandle, null);
 }
 
 alloc_imgui :: (sz: u64, user_data: *void) -> *void #c_call
@@ -748,7 +915,7 @@ free_imgui :: (ptr: *void, user_data: *void) #c_call
 	}
 }
 
-init_imgui :: (s: *GfxDevice) {
+init_imgui :: (s: *RHIDevice) {
 	using s;
 	poolSizes := VkDescriptorPoolSize.[.{.COMBINED_IMAGE_SAMPLER, 1}];
 	poolInfo: VkDescriptorPoolCreateInfo;
@@ -826,7 +993,7 @@ supports_validation_layers :: () -> bool {
 	return true;
 }
 
-get_required_extensions :: (state: *GfxDevice) -> [..] *u8, bool {
+get_required_extensions :: (state: *RHIDevice) -> [..] *u8, bool {
 	required_extensions: [..] *u8;
 	required_extensions.allocator = temp;
 
@@ -1148,7 +1315,6 @@ image_view_create_info :: (format: VkFormat, image: VkImage, aspectFlags: VkImag
 #import "vma";
 
 #load "descriptors.jai";
-#load "pipeline_builder.jai";
 #load "../imgui_backend.jai";
 
 VALIDATION_ENABLED :: BUILD_TYPE != .RELEASE;
