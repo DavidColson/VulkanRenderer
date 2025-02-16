@@ -120,13 +120,12 @@ Shader :: struct {
 }
 
 Texture :: struct {
-	imageFormat: PixelFormat;
+	format: PixelFormat;
+	size: TextureSize;
 
-	// backend specific handles
-	image: VkImage = VK_NULL_HANDLE;
-	imageView: VkImageView;
+	platformHandle: VkImage = VK_NULL_HANDLE;
+	imageViewHandle: VkImageView;
 	allocation: VmaAllocation;
-	imageExtent: VkExtent3D;
 }
 
 Sampler :: struct {
@@ -199,8 +198,8 @@ rhi_device_create_bind_group_layout :: (using s: *Device, opts: BindGroupLayoutD
 		newBind: VkDescriptorSetLayoutBinding;
 		newBind.binding = xx opts.bindings[it].slot;
 		newBind.descriptorCount = 1;
-		newBind.descriptorType = binding_type_to_vk_descriptor_type(opts.bindings[it].type);
-		newBind.stageFlags = shader_stage_to_vk_shader_stage(opts.bindings[it].shaderStage);
+		newBind.descriptorType = binding_type_to_vk(opts.bindings[it].type);
+		newBind.stageFlags = shader_stage_to_vk(opts.bindings[it].shaderStage);
 		array_add(*bindings, newBind);
 	}
 	info.pBindings = bindings.data;
@@ -289,11 +288,11 @@ rhi_device_create_bind_group :: (using s: *Device, opts: BindGroupDesc) -> BindG
 			descriptorWrite.pImageInfo = imgInfo;
 		}
 		else if bind.type == .SAMPLED_IMAGE {
-			assert(opts.resources[it].texture.image != VK_NULL_HANDLE);
+			assert(opts.resources[it].texture.platformHandle != VK_NULL_HANDLE);
 
 			imgInfo := array_add(*imageInfos);
 			imgInfo.imageLayout = .SHADER_READ_ONLY_OPTIMAL;
-			imgInfo.imageView = opts.resources[it].texture.imageView;
+			imgInfo.imageView = opts.resources[it].texture.imageViewHandle;
 
 			descriptorWrite := array_add(*writeDescriptorSets);
 			descriptorWrite.dstSet = descriptorSet;
@@ -303,11 +302,11 @@ rhi_device_create_bind_group :: (using s: *Device, opts: BindGroupDesc) -> BindG
 			descriptorWrite.pImageInfo = imgInfo;
 		}
 		else if bind.type == .STORAGE_IMAGE {
-			assert(opts.resources[it].texture.image != VK_NULL_HANDLE);
+			assert(opts.resources[it].texture.platformHandle != VK_NULL_HANDLE);
 
 			imgInfo := array_add(*imageInfos);
 			imgInfo.imageLayout = .GENERAL;
-			imgInfo.imageView = opts.resources[it].texture.imageView;
+			imgInfo.imageView = opts.resources[it].texture.imageViewHandle;
 
 			descriptorWrite := array_add(*writeDescriptorSets);
 			descriptorWrite.dstSet = descriptorSet;
@@ -334,7 +333,7 @@ rhi_device_create_pipeline :: (using s: *Device, opts: PipelineDesc) -> Pipeline
 	for 0..opts.pushConstants.count-1 {
 		pushConstants[it].offset = xx opts.pushConstants[it].offset;
 		pushConstants[it].size = xx opts.pushConstants[it].size;
-		pushConstants[it].stageFlags = shader_stage_to_vk_shader_stage(opts.pushConstants[it].stage);
+		pushConstants[it].stageFlags = shader_stage_to_vk(opts.pushConstants[it].stage);
 	}
 
 	setLayouts: [3]VkDescriptorSetLayout;
@@ -355,11 +354,11 @@ rhi_device_create_pipeline :: (using s: *Device, opts: PipelineDesc) -> Pipeline
 	renderInfo: VkPipelineRenderingCreateInfo;
 	colorTargetFormats: [MAX_COLOR_TARGETS]VkFormat;
 	for 0..opts.colorTargetCount-1 {
-		colorTargetFormats[it] = pixel_format_to_vk_format(opts.colorTargets[it].format);
+		colorTargetFormats[it] = pixel_format_to_vk(opts.colorTargets[it].format);
 	}
 	renderInfo.colorAttachmentCount = xx opts.colorTargetCount;
 	renderInfo.pColorAttachmentFormats = colorTargetFormats.data;
-	renderInfo.depthAttachmentFormat = pixel_format_to_vk_format(opts.depthTargetFormat);
+	renderInfo.depthAttachmentFormat = pixel_format_to_vk(opts.depthTargetFormat);
 	pipelineInfo.pNext = *renderInfo;
 
 	shaderStages: [2]VkPipelineShaderStageCreateInfo;
@@ -377,7 +376,7 @@ rhi_device_create_pipeline :: (using s: *Device, opts: PipelineDesc) -> Pipeline
 
 	inputAssembly: VkPipelineInputAssemblyStateCreateInfo;
 	inputAssembly.primitiveRestartEnable = VK_FALSE;
-	inputAssembly.topology = topology_to_vk_topology(opts.topology);
+	inputAssembly.topology = topology_to_vk(opts.topology);
 	pipelineInfo.pInputAssemblyState = *inputAssembly;
 
 	viewportState: VkPipelineViewportStateCreateInfo;
@@ -386,9 +385,9 @@ rhi_device_create_pipeline :: (using s: *Device, opts: PipelineDesc) -> Pipeline
 	pipelineInfo.pViewportState = *viewportState;
 
 	rasterizer: VkPipelineRasterizationStateCreateInfo;
-	rasterizer.polygonMode = polygon_mode_to_vk_polygon_mode(opts.rasterizer.polygonMode);
-	rasterizer.cullMode = cull_mode_to_vk_cull_mode(opts.rasterizer.cullMode);
-	rasterizer.frontFace = front_face_to_vk_front_face(opts.rasterizer.frontFace); 
+	rasterizer.polygonMode = polygon_mode_to_vk(opts.rasterizer.polygonMode);
+	rasterizer.cullMode = cull_mode_to_vk(opts.rasterizer.cullMode);
+	rasterizer.frontFace = front_face_to_vk(opts.rasterizer.frontFace); 
 	rasterizer.depthClampEnable = VK_FALSE;
 	rasterizer.lineWidth = 1;
 	pipelineInfo.pRasterizationState = *rasterizer;
@@ -407,7 +406,7 @@ rhi_device_create_pipeline :: (using s: *Device, opts: PipelineDesc) -> Pipeline
 	colorBlending.logicOp = .COPY;
 	colorBlendAttachments: [MAX_COLOR_TARGETS]VkPipelineColorBlendAttachmentState;
 	for 0..opts.colorTargetCount-1 {
-		colorBlendAttachments[it].colorWriteMask = color_mask_to_vk_color_mask(opts.colorTargets[it].colorWriteMask);
+		colorBlendAttachments[it].colorWriteMask = color_mask_to_vk(opts.colorTargets[it].colorWriteMask);
 		colorBlendAttachments[it].blendEnable = VK_FALSE;
 	}
 	colorBlending.attachmentCount = xx opts.colorTargetCount;
@@ -417,7 +416,7 @@ rhi_device_create_pipeline :: (using s: *Device, opts: PipelineDesc) -> Pipeline
 	depthStencil: VkPipelineDepthStencilStateCreateInfo;
 	depthStencil.depthTestEnable =  cast(VkBool32) opts.depth.depthTestEnabled;
 	depthStencil.depthWriteEnable = cast(VkBool32) opts.depth.depthWriteEnabled;
-	depthStencil.depthCompareOp = compare_op_to_vk_compare_op(opts.depth.compareOp);
+	depthStencil.depthCompareOp = compare_op_to_vk(opts.depth.compareOp);
 	depthStencil.depthBoundsTestEnable = VK_FALSE;
 	depthStencil.stencilTestEnable = cast(VkBool32) opts.depth.stencilTestEnabled;
 	depthStencil.front = .{};
@@ -443,64 +442,66 @@ rhi_device_create_pipeline :: (using s: *Device, opts: PipelineDesc) -> Pipeline
 	return pipeline;
 }
 
-rhi_device_create_image :: (using s: *Device, size: VkExtent3D, format: PixelFormat, usage: VkImageUsageFlags) -> Texture {
-
+rhi_device_create_texture :: (using s: *Device, opts: TextureDesc) -> Texture {
 	image: Texture;
-	image.imageExtent = size;
-	image.imageFormat = format; 
+	image.size = opts.size;
+	image.format = opts.format; 
 
 	imageInfo: VkImageCreateInfo;
 	imageInfo.imageType = .VK_IMAGE_TYPE_2D;
-	imageInfo.format = pixel_format_to_vk_format(format);
-	imageInfo.extent = size;
+	imageInfo.format = pixel_format_to_vk(opts.format);
+	imageInfo.extent = texture_size_to_vk(opts.size);
 	imageInfo.mipLevels = 1;
 	imageInfo.arrayLayers = 1;
 	imageInfo.samples = .VK_SAMPLE_COUNT_1_BIT;
 	imageInfo.tiling = .VK_IMAGE_TILING_OPTIMAL;
-	imageInfo.usage = usage;
+	imageInfo.usage = texture_usage_mask_to_vk(opts.usage);
+	if opts.data {
+		imageInfo.usage |= .TRANSFER_DST_BIT | .TRANSFER_SRC_BIT;
+	}
 
 	imgAllocInfo: VmaAllocationCreateInfo;
 	imgAllocInfo.usage = .GPU_ONLY;
 	imgAllocInfo.requiredFlags = .DEVICE_LOCAL_BIT;
 
-	vmaCreateImage(gpuAllocator, *imageInfo, *imgAllocInfo, *image.image, *image.allocation, null);
+	vmaCreateImage(gpuAllocator, *imageInfo, *imgAllocInfo, *image.platformHandle, *image.allocation, null);
 
 	aspectFlag: VkImageAspectFlags = .COLOR_BIT;
-	if format == .DEPTH {
+	if opts.format == .DEPTH {
 		aspectFlag = .DEPTH_BIT;
 	}
-	imageViewInfo := image_view_create_info(imageInfo.format, image.image, aspectFlag);
+	imageViewInfo := image_view_create_info(imageInfo.format, image.platformHandle, aspectFlag);
 
-	vkCreateImageView(device, *imageViewInfo, null, *image.imageView);
-	return image;
-}
+	vkCreateImageView(device, *imageViewInfo, null, *image.imageViewHandle);
 
-rhi_device_create_image :: (using s: *Device, data: *void, size: VkExtent3D, format: PixelFormat, usage: VkImageUsageFlags) -> Texture {
+	// directly upload data if given
+	if opts.data {
+		dataSize := opts.size.depth * opts.size.width * opts.size.height * 4;
+		uploadBuffer := rhi_device_create_buffer(s, .{
+			size = xx dataSize,
+			usage = .COPY_SRC,
+			memory = .CPU_TO_GPU
+		});
+		memcpy(uploadBuffer.info.pMappedData, opts.data, dataSize);
 
-	dataSize := size.depth * size.width * size.height * 4;
-	uploadBuffer := rhi_device_create_buffer(s, dataSize, .TRANSFER_SRC_BIT, .CPU_TO_GPU);
-	memcpy(uploadBuffer.info.pMappedData, data, dataSize);
+		rhi_device_begin_immediate_submit(s);
 
-	image := rhi_device_create_image(s, size, format, usage | .TRANSFER_DST_BIT | .TRANSFER_SRC_BIT);
+		transition_image(immediateCommandBuffer, image.platformHandle, .UNDEFINED, .TRANSFER_DST_OPTIMAL); 
+		copyRegion: VkBufferImageCopy;
+		copyRegion.bufferOffset = 0;
+		copyRegion.bufferRowLength = 0;
+		copyRegion.bufferImageHeight = 0;
+		copyRegion.imageSubresource.aspectMask = .COLOR_BIT;
+		copyRegion.imageSubresource.mipLevel = 0;
+		copyRegion.imageSubresource.baseArrayLayer = 0;
+		copyRegion.imageSubresource.layerCount = 1;
+		copyRegion.imageExtent = texture_size_to_vk(opts.size);
+		vkCmdCopyBufferToImage(immediateCommandBuffer, uploadBuffer.buffer, image.platformHandle, .TRANSFER_DST_OPTIMAL, 1, *copyRegion);
+		transition_image(immediateCommandBuffer, image.platformHandle, .TRANSFER_DST_OPTIMAL, .SHADER_READ_ONLY_OPTIMAL); 
 
-	rhi_device_begin_immediate_submit(s);
-
-	transition_image(immediateCommandBuffer, image.image, .UNDEFINED, .TRANSFER_DST_OPTIMAL); 
-
-	copyRegion: VkBufferImageCopy;
-	copyRegion.bufferOffset = 0;
-	copyRegion.bufferRowLength = 0;
-	copyRegion.bufferImageHeight = 0;
-	copyRegion.imageSubresource.aspectMask = .COLOR_BIT;
-	copyRegion.imageSubresource.mipLevel = 0;
-	copyRegion.imageSubresource.baseArrayLayer = 0;
-	copyRegion.imageSubresource.layerCount = 1;
-	copyRegion.imageExtent = size;
-	vkCmdCopyBufferToImage(immediateCommandBuffer, uploadBuffer.buffer, image.image, .TRANSFER_DST_OPTIMAL, 1, *copyRegion);
-
-	transition_image(immediateCommandBuffer, image.image, .TRANSFER_DST_OPTIMAL, .SHADER_READ_ONLY_OPTIMAL); 
-
-	rhi_device_end_immediate_submit(s);
+		rhi_device_end_immediate_submit(s);
+		rhi_device_destroy_buffer(s, *uploadBuffer);
+	}
 	return image;
 }
 
@@ -526,13 +527,13 @@ rhi_device_create_shader :: (s: *Device, bytes: []u8) -> Shader {
 	return .{platformHandle = shaderModule};
 }
 
-rhi_device_create_buffer :: (s: *Device, size: u64, usage: VkBufferUsageFlags, memoryUsage: VmaMemoryUsage) -> Buffer {
+rhi_device_create_buffer :: (s: *Device, opts: BufferDesc) -> Buffer {
 	info: VkBufferCreateInfo;
-	info.size = size;
-	info.usage = usage;
+	info.size = xx opts.size;
+	info.usage = buffer_usage_mask_to_vk(opts.usage);
 
 	allocInfo: VmaAllocationCreateInfo;
-	allocInfo.usage = memoryUsage;
+	allocInfo.usage = memory_usage_to_vk(opts.memory);
 	allocInfo.flags = .MAPPED_BIT;
 	newBuffer: Buffer;
 	result := vmaCreateBuffer(s.gpuAllocator, *info, *allocInfo, *newBuffer.buffer, *newBuffer.allocation, *newBuffer.info);
@@ -645,9 +646,9 @@ submit_info :: ( cmd: *VkCommandBufferSubmitInfo, signal_semaphore_info: *VkSema
 
 #scope_file
 
-// Enum converters
+// Type converters
 
-shader_stage_to_vk_shader_stage :: (shaderStage: ShaderStage) -> VkShaderStageFlags {
+shader_stage_to_vk :: (shaderStage: ShaderStage) -> VkShaderStageFlags {
 	if shaderStage == {
 		case .VERTEX; return .VERTEX_BIT; 
 		case .PIXEL; return .FRAGMENT_BIT; 
@@ -656,7 +657,7 @@ shader_stage_to_vk_shader_stage :: (shaderStage: ShaderStage) -> VkShaderStageFl
 	}
 }
 
-pixel_format_to_vk_format :: (format: PixelFormat) -> VkFormat {
+pixel_format_to_vk :: (format: PixelFormat) -> VkFormat {
 	if format == {
 		case .RGBA8; return .R8G8B8A8_UNORM;
 		case .RGBA16F; return .R16G16B16A16_SFLOAT;
@@ -665,7 +666,7 @@ pixel_format_to_vk_format :: (format: PixelFormat) -> VkFormat {
 	}
 }
 
-topology_to_vk_topology :: (topology: Topology) -> VkPrimitiveTopology {
+topology_to_vk :: (topology: Topology) -> VkPrimitiveTopology {
 	if topology == {
 		case .POINT_LIST; return .POINT_LIST; 
 		case .LINE_LIST; return .LINE_LIST; 
@@ -677,7 +678,7 @@ topology_to_vk_topology :: (topology: Topology) -> VkPrimitiveTopology {
 	}
 }
 
-polygon_mode_to_vk_polygon_mode :: (polygonMode: PolygonMode) -> VkPolygonMode {
+polygon_mode_to_vk :: (polygonMode: PolygonMode) -> VkPolygonMode {
 	if polygonMode == {
 		case .FILL; return .FILL; 
 		case .LINE; return .LINE; 
@@ -686,7 +687,7 @@ polygon_mode_to_vk_polygon_mode :: (polygonMode: PolygonMode) -> VkPolygonMode {
 	}
 }
 
-cull_mode_to_vk_cull_mode :: (cullMode: CullMode) -> VkCullModeFlagBits {
+cull_mode_to_vk :: (cullMode: CullMode) -> VkCullModeFlagBits {
 	if cullMode == {
 		case .NONE; return .NONE; 
 		case .FRONT; return .FRONT_BIT; 
@@ -696,7 +697,7 @@ cull_mode_to_vk_cull_mode :: (cullMode: CullMode) -> VkCullModeFlagBits {
 	}
 }
 
-front_face_to_vk_front_face :: (frontFace: FrontFace) -> VkFrontFace {
+front_face_to_vk :: (frontFace: FrontFace) -> VkFrontFace {
 	if frontFace == {
 		case .COUNTER_CLOCKWISE; return .COUNTER_CLOCKWISE; 
 		case .CLOCKWISE; return .CLOCKWISE; 
@@ -704,7 +705,7 @@ front_face_to_vk_front_face :: (frontFace: FrontFace) -> VkFrontFace {
 	}
 }
 
-compare_op_to_vk_compare_op :: (compareOp: CompareOp) -> VkCompareOp {
+compare_op_to_vk :: (compareOp: CompareOp) -> VkCompareOp {
 	if compareOp == {
 		case .NEVER; return .NEVER; 
 		case .LESS; return .LESS; 
@@ -718,7 +719,7 @@ compare_op_to_vk_compare_op :: (compareOp: CompareOp) -> VkCompareOp {
 	}
 }
 
-color_mask_to_vk_color_mask :: (colorMask: ColorComponentFlags) -> VkColorComponentFlags {
+color_mask_to_vk :: (colorMask: ColorComponentFlags) -> VkColorComponentFlags {
 	vkMask: VkColorComponentFlags;
 	if colorMask & .R then vkMask |= .R_BIT;
 	if colorMask & .G then vkMask |= .G_BIT;
@@ -727,7 +728,7 @@ color_mask_to_vk_color_mask :: (colorMask: ColorComponentFlags) -> VkColorCompon
 	return vkMask;
 }
 
-binding_type_to_vk_descriptor_type :: (bindingType: BindingType) -> VkDescriptorType {
+binding_type_to_vk :: (bindingType: BindingType) -> VkDescriptorType {
 	if bindingType == {
 		case .SAMPLER; return .SAMPLER; 
 		case .SAMPLED_IMAGE; return .SAMPLED_IMAGE; 
@@ -735,6 +736,43 @@ binding_type_to_vk_descriptor_type :: (bindingType: BindingType) -> VkDescriptor
 		case .UNIFORM_BUFFER; return .UNIFORM_BUFFER; 
 		case .STORAGE_BUFFER; return .STORAGE_BUFFER; 
 		case; return .SAMPLED_IMAGE;
+	}
+}
+
+texture_usage_mask_to_vk :: (textureUsageMask: TextureUsageFlags) -> VkImageUsageFlags {
+	vkMask: VkImageUsageFlags;
+	if textureUsageMask & .COPY_SRC then vkMask |= .TRANSFER_SRC_BIT;
+	if textureUsageMask & .COPY_DST then vkMask |= .TRANSFER_DST_BIT;
+	if textureUsageMask & .READ_ONLY then vkMask |= .SAMPLED_BIT;
+	if textureUsageMask & .READ_AND_WRITE then vkMask |= .STORAGE_BIT;
+	if textureUsageMask & .COLOR_TARGET then vkMask |= .COLOR_ATTACHMENT_BIT;
+	if textureUsageMask & .DEPTH_TARGET then vkMask |= .DEPTH_STENCIL_ATTACHMENT_BIT;
+	return vkMask;
+}
+
+texture_size_to_vk :: (size: TextureSize) -> VkExtent3D {
+	return .{ width = xx size.width, height = xx size.height, depth = xx size.depth };
+}
+
+buffer_usage_mask_to_vk :: (bufferUsageMask: BufferUsageFlags) -> VkBufferUsageFlags {
+	vkMask: VkBufferUsageFlags;
+	if bufferUsageMask & .COPY_SRC then vkMask |= .TRANSFER_SRC_BIT;
+	if bufferUsageMask & .COPY_DST then vkMask |= .TRANSFER_DST_BIT;
+	if bufferUsageMask & .READ_ONLY then vkMask |= .UNIFORM_BUFFER_BIT;
+	if bufferUsageMask & .READ_AND_WRITE then vkMask |= .STORAGE_BUFFER_BIT;
+	if bufferUsageMask & .INDEX_BUFFER then vkMask |= .INDEX_BUFFER_BIT;
+	if bufferUsageMask & .VERTEX_BUFFER then vkMask |= .VERTEX_BUFFER_BIT;
+	if bufferUsageMask & .SHADER_DEVICE_ADDRESS then vkMask |= .SHADER_DEVICE_ADDRESS_BIT;
+	return vkMask;
+}
+
+memory_usage_to_vk :: (memoryUsage: MemoryUsageFlags) -> VmaMemoryUsage {
+	if memoryUsage == {
+		case .GPU_ONLY; return .GPU_ONLY;
+		case .CPU_ONLY; return .CPU_ONLY;
+		case .CPU_TO_GPU; return .CPU_TO_GPU;
+		case .GPU_TO_CPU; return .GPU_TO_CPU;
+		case; return .GPU_ONLY;
 	}
 }
 
@@ -949,18 +987,17 @@ init_swapchain :: (state: *Device) {
 	
 	array_resize(*frames, image_count);
 
-	// init draw image
-	drawImageUsageFlags : VkImageUsageFlags;
-	drawImageUsageFlags |= .TRANSFER_SRC_BIT;
-	drawImageUsageFlags |= .TRANSFER_DST_BIT;
-	drawImageUsageFlags |= .STORAGE_BIT;
-	drawImageUsageFlags |= .COLOR_ATTACHMENT_BIT;
-	drawImage = rhi_device_create_image(state, VkExtent3D.{width = WIDTH, height = HEIGHT, depth=1}, .RGBA16F, drawImageUsageFlags);
+	drawImage = rhi_device_create_texture(state, .{
+		format = .RGBA16F,
+		size = .{width = WIDTH, height = HEIGHT, depth=1},
+		usage = .COPY_SRC | .COPY_DST | .READ_AND_WRITE | .COLOR_TARGET,
+	});
 
-	// init depth
-	depthImageUsage: VkImageUsageFlags;
-	depthImageUsage |= .DEPTH_STENCIL_ATTACHMENT_BIT;
-	depthImage = rhi_device_create_image(state, drawImage.imageExtent, .DEPTH, depthImageUsage);
+	depthImage = rhi_device_create_texture(state, .{
+		format = .DEPTH,
+		size = drawImage.size,
+		usage = .DEPTH_TARGET
+	});
 }
 
 init_swapchain_image_views :: (state: *Device) {
@@ -1069,7 +1106,7 @@ init_descriptors :: (state: *Device) {
 
 		imgInfo: VkDescriptorImageInfo;
 		imgInfo.imageLayout = .GENERAL;
-		imgInfo.imageView = drawImage.imageView;
+		imgInfo.imageView = drawImage.imageViewHandle;
 
 		drawImageWrite: VkWriteDescriptorSet;
 		drawImageWrite.dstSet = drawImageDescriptors;

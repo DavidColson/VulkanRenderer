@@ -142,3 +142,48 @@ SamplerDesc :: struct {
 	magFilter: VkFilter;
 	minFilter: VkFilter;
 }
+
+TextureSize :: struct {
+	width: s32;
+	height: s32;
+	depth: s32;
+}
+
+TextureUsageFlags :: enum_flags {
+    COPY_SRC       :: 0x1;
+    COPY_DST       :: 0x2;
+    READ_ONLY      :: 0x4;
+    READ_AND_WRITE :: 0x8;
+    COLOR_TARGET   :: 0x10;
+    DEPTH_TARGET   :: 0x20;
+}
+
+TextureDesc :: struct {
+	format: PixelFormat;
+	size: TextureSize;
+	usage: TextureUsageFlags;
+	data: *void;
+}
+
+BufferUsageFlags :: enum_flags {
+    COPY_SRC              :: 0x1;
+    COPY_DST              :: 0x2;
+    READ_ONLY             :: 0x4;
+    READ_AND_WRITE        :: 0x8;
+    INDEX_BUFFER          :: 0x10;
+    VERTEX_BUFFER         :: 0x20;
+	SHADER_DEVICE_ADDRESS :: 0x40;
+}
+
+MemoryUsageFlags :: enum {
+    GPU_ONLY;
+    CPU_ONLY;
+    CPU_TO_GPU;
+    GPU_TO_CPU;
+}
+
+BufferDesc :: struct {
+	size: s32;
+	usage: BufferUsageFlags;
+	memory: MemoryUsageFlags;
+}

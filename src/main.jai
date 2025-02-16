@@ -85,7 +85,12 @@ init_mesh_pipeline :: (using s: *Device) {
 		comp: s32;
 		imageData: *u8 = stbi_load("crate.png", *x, *y, *comp, 4);
 
-		crateTexture = rhi_device_create_image(s, imageData, VkExtent3D.{width = xx x, height = xx y, depth=1}, .RGBA8, .SAMPLED_BIT);
+		crateTexture = rhi_device_create_texture(s, .{
+			format = .RGBA8,
+			size = .{ width = x, height = y, depth=1},
+			usage = .READ_ONLY,
+			data = imageData
+		});
 	}
 
 	linearSampler = rhi_device_create_sampler(s, .{
@@ -125,9 +130,9 @@ init_mesh_pipeline :: (using s: *Device) {
 		},
 		colorTargetCount = 1,
 		colorTargets = .[.{
-			format = drawImage.imageFormat
+			format = drawImage.format
 		}],
-		depthTargetFormat = depthImage.imageFormat,
+		depthTargetFormat = depthImage.format,
 		depth = .{
 			depthWriteEnabled = true,
 			depthTestEnabled = true,
@@ -211,17 +216,29 @@ upload_mesh :: (s: *Device, indices: []u32, vertices: []Vertex) -> GpuMeshBuffer
 
 	mesh: GpuMeshBuffers;
 
-	mesh.vertexBuffer = rhi_device_create_buffer(s, xx vertexBufferSize, .STORAGE_BUFFER_BIT | .TRANSFER_DST_BIT | .SHADER_DEVICE_ADDRESS_BIT, .GPU_ONLY);
+	mesh.vertexBuffer = rhi_device_create_buffer(s, .{
+		size = xx vertexBufferSize,
+		usage = .READ_AND_WRITE | .COPY_DST | .SHADER_DEVICE_ADDRESS,
+		memory = .GPU_ONLY
+	});
 
 	deviceAddressInfo: VkBufferDeviceAddressInfo;
 	deviceAddressInfo.buffer = mesh.vertexBuffer.buffer;
 	mesh.deviceAddress = vkGetBufferDeviceAddress(s.device, *deviceAddressInfo);
 
-	mesh.indexBuffer = rhi_device_create_buffer(s, xx indexBufferSize, .INDEX_BUFFER_BIT | .TRANSFER_DST_BIT, .GPU_ONLY);
+	mesh.indexBuffer = rhi_device_create_buffer(s, .{
+		size = xx indexBufferSize,
+		usage = .INDEX_BUFFER | .COPY_DST,
+		memory = .GPU_ONLY
+	});
 
 	// here's where the actual data upload happens
 	// it's doing a full immediate submit, should research how to do this better
-	staging := rhi_device_create_buffer(s, xx (vertexBufferSize + indexBufferSize), .TRANSFER_SRC_BIT, .CPU_ONLY);
+	staging := rhi_device_create_buffer(s, .{
+		size = xx (vertexBufferSize + indexBufferSize),
+		usage = .COPY_SRC,
+		memory = .CPU_ONLY
+	});
 
 	data := staging.info.pMappedData;
 
@@ -286,12 +303,12 @@ draw :: (s: *Device) {
 	cmd := rhi_device_get_current_frame(s).mainCommandBuffer;
 	vkResetCommandBuffer(cmd, 0);
 
-	s.drawExtent.width = s.drawImage.imageExtent.width;
-	s.drawExtent.height = s.drawImage.imageExtent.height;
+	s.drawExtent.width = xx s.drawImage.size.width;
+	s.drawExtent.height = xx s.drawImage.size.height;
 
 	vkBeginCommandBuffer(cmd, *cmd_begin_info);
 
-	transition_image(cmd, s.drawImage.image, .UNDEFINED, .GENERAL);
+	transition_image(cmd, s.drawImage.platformHandle, .UNDEFINED, .GENERAL);
 
 	// draw background with compute
 	////////////////////////////////
@@ -312,16 +329,16 @@ draw :: (s: *Device) {
 	vkCmdDispatch(cmd, xx ceil(s.drawExtent.width / 16.0), xx ceil(s.drawExtent.width / 16.0), 1);
 
 
-	transition_image(cmd, s.drawImage.image, .GENERAL, .COLOR_ATTACHMENT_OPTIMAL);
-	transition_image(cmd, s.depthImage.image, .UNDEFINED, .DEPTH_ATTACHMENT_OPTIMAL);
+	transition_image(cmd, s.drawImage.platformHandle, .GENERAL, .COLOR_ATTACHMENT_OPTIMAL);
+	transition_image(cmd, s.depthImage.platformHandle, .UNDEFINED, .DEPTH_ATTACHMENT_OPTIMAL);
 
 	draw_geometry(cmd, s);
 
 	// blit our frame onto the swapchain
-	transition_image(cmd, s.drawImage.image, .COLOR_ATTACHMENT_OPTIMAL, .TRANSFER_SRC_OPTIMAL);
+	transition_image(cmd, s.drawImage.platformHandle, .COLOR_ATTACHMENT_OPTIMAL, .TRANSFER_SRC_OPTIMAL);
 	transition_image(cmd, s.swapchainImages[swapchain_image_index], .UNDEFINED, .TRANSFER_DST_OPTIMAL);
 
-	copy_image_to_image(cmd, s.drawImage.image, s.swapchainImages[swapchain_image_index], s.drawExtent, s.swapchainExtent);
+	copy_image_to_image(cmd, s.drawImage.platformHandle, s.swapchainImages[swapchain_image_index], s.drawExtent, s.swapchainExtent);
 
 	transition_image(cmd, s.swapchainImages[swapchain_image_index], .TRANSFER_DST_OPTIMAL, .COLOR_ATTACHMENT_OPTIMAL);
 
@@ -367,12 +384,12 @@ draw :: (s: *Device) {
 
 draw_geometry :: (cmd: VkCommandBuffer, s: *Device) {
 	colorAttachment: VkRenderingAttachmentInfo;
-	colorAttachment.imageView = s.drawImage.imageView;
+	colorAttachment.imageView = s.drawImage.imageViewHandle;
 	colorAttachment.imageLayout = .COLOR_ATTACHMENT_OPTIMAL;
 	colorAttachment.loadOp = .LOAD;
 	colorAttachment.storeOp = .STORE;
 	depthAttachment: VkRenderingAttachmentInfo;
-	depthAttachment.imageView = s.depthImage.imageView;
+	depthAttachment.imageView = s.depthImage.imageViewHandle;
 	depthAttachment.imageLayout = .DEPTH_ATTACHMENT_OPTIMAL;
 	depthAttachment.loadOp = .CLEAR;
 	depthAttachment.storeOp = .STORE;
