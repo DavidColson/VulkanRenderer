@@ -7,6 +7,7 @@
 #import "stb_image";
 
 #load "rhi_device.jai";
+#load "rhi_command_buffer.jai";
 
 
 WIDTH :: 800;
@@ -103,7 +104,7 @@ main :: () {
 		}
 		draw(*device);
 		reset_temporary_storage();
-		rhi_device_reset_temporary_memory(*device);
+		// rhi_device_reset_temporary_memory(*device);
 	}
 }
 
@@ -322,21 +323,21 @@ upload_mesh :: (s: *Device, indices: []u32, vertices: []Vertex) -> GpuMeshBuffer
 	memcpy(data, vertices.data, vertexBufferSize);
 	memcpy(cast(*u8)data + vertexBufferSize, indices.data, indexBufferSize);
 
-	rhi_device_begin_immediate_submit(s);
+	cmd := rhi_device_acquire_command_buffer(s);
 
 	vertexCopy: VkBufferCopy;
 	vertexCopy.dstOffset = 0;
 	vertexCopy.srcOffset = 0;
 	vertexCopy.size = xx vertexBufferSize;
-	vkCmdCopyBuffer(s.immediateCommandBuffer, staging.buffer, mesh.vertexBuffer.buffer, 1, *vertexCopy);
+	vkCmdCopyBuffer(cmd.platformHandle, staging.buffer, mesh.vertexBuffer.buffer, 1, *vertexCopy);
 
 	indexCopy: VkBufferCopy;
 	indexCopy.dstOffset = 0;
 	indexCopy.srcOffset = xx vertexBufferSize;
 	indexCopy.size = xx indexBufferSize;
-	vkCmdCopyBuffer(s.immediateCommandBuffer, staging.buffer, mesh.indexBuffer.buffer, 1, *indexCopy);
+	vkCmdCopyBuffer(cmd.platformHandle, staging.buffer, mesh.indexBuffer.buffer, 1, *indexCopy);
 
-	rhi_device_end_immediate_submit(s);
+	submit(cmd);
 	return mesh;
 }
 
@@ -358,34 +359,15 @@ draw :: (s: *Device) {
 
 	ImGui.Render();
 
+	cmd := rhi_device_acquire_command_buffer(s);
 
-	ONE_SECOND_IN_NS :: 1000000000;
-	vkWaitForFences(s.device, 1, *rhi_device_get_current_frame(s).renderFence, VK_TRUE, ONE_SECOND_IN_NS);
-	vkResetFences(s.device, 1, *rhi_device_get_current_frame(s).renderFence);
-
-	swapchain_image_index: u32;
-	vkAcquireNextImageKHR(
-		s.device, 
-		s.swapchain, 
-		ONE_SECOND_IN_NS, 
-		rhi_device_get_current_frame(s).swapchainSemaphore, 
-		null, 
-		*swapchain_image_index
-	);
-
-	cmd_begin_info := VkCommandBufferBeginInfo.{
-		flags = .ONE_TIME_SUBMIT_BIT
-	};
-
-	cmd := rhi_device_get_current_frame(s).mainCommandBuffer;
-	vkResetCommandBuffer(cmd, 0);
+	swapchainTexture := wait_and_acquire_swapchain_texture(cmd);
 
 	s.drawExtent.width = xx s.drawImage.size.width;
 	s.drawExtent.height = xx s.drawImage.size.height;
 
-	vkBeginCommandBuffer(cmd, *cmd_begin_info);
 
-	transition_image(cmd, s.drawImage.platformHandle, .UNDEFINED, .GENERAL);
+	transition_image(cmd.platformHandle, s.drawImage.platformHandle, .UNDEFINED, .GENERAL);
 
 	// draw background with compute
 	////////////////////////////////
@@ -399,29 +381,29 @@ draw :: (s: *Device) {
 	// vkCmdClearColorImage(cmd, s.drawImage.image, .GENERAL, *clear_value, 1, *clear_range);
 
 	// compute to draw our gradient
-	vkCmdBindPipeline(cmd, .COMPUTE, s.computePipeline);
-	vkCmdBindDescriptorSets(cmd, .COMPUTE, s.computePipelineLayout, 0, 1, *s.computeBindGroup.platformHandle, 0, null);
+	vkCmdBindPipeline(cmd.platformHandle, .COMPUTE, s.computePipeline);
+	vkCmdBindDescriptorSets(cmd.platformHandle, .COMPUTE, s.computePipelineLayout, 0, 1, *s.computeBindGroup.platformHandle, 0, null);
 
-	vkCmdPushConstants(cmd, s.computePipelineLayout, .COMPUTE_BIT, 0, size_of(ComputePushConstants), *s.pc);
-	vkCmdDispatch(cmd, xx ceil(s.drawExtent.width / 16.0), xx ceil(s.drawExtent.width / 16.0), 1);
+	vkCmdPushConstants(cmd.platformHandle, s.computePipelineLayout, .COMPUTE_BIT, 0, size_of(ComputePushConstants), *s.pc);
+	vkCmdDispatch(cmd.platformHandle, xx ceil(s.drawExtent.width / 16.0), xx ceil(s.drawExtent.width / 16.0), 1);
 
 
-	transition_image(cmd, s.drawImage.platformHandle, .GENERAL, .COLOR_ATTACHMENT_OPTIMAL);
-	transition_image(cmd, s.depthImage.platformHandle, .UNDEFINED, .DEPTH_ATTACHMENT_OPTIMAL);
+	transition_image(cmd.platformHandle, s.drawImage.platformHandle, .GENERAL, .COLOR_ATTACHMENT_OPTIMAL);
+	transition_image(cmd.platformHandle, s.depthImage.platformHandle, .UNDEFINED, .DEPTH_ATTACHMENT_OPTIMAL);
 
-	draw_geometry(cmd, s);
+	draw_geometry(cmd.platformHandle, s);
 
 	// blit our frame onto the swapchain
-	transition_image(cmd, s.drawImage.platformHandle, .COLOR_ATTACHMENT_OPTIMAL, .TRANSFER_SRC_OPTIMAL);
-	transition_image(cmd, s.swapchainImages[swapchain_image_index], .UNDEFINED, .TRANSFER_DST_OPTIMAL);
+	transition_image(cmd.platformHandle, s.drawImage.platformHandle, .COLOR_ATTACHMENT_OPTIMAL, .TRANSFER_SRC_OPTIMAL);
+	transition_image(cmd.platformHandle, swapchainTexture.platformHandle, .UNDEFINED, .TRANSFER_DST_OPTIMAL);
 
-	copy_image_to_image(cmd, s.drawImage.platformHandle, s.swapchainImages[swapchain_image_index], s.drawExtent, s.swapchainExtent);
+	copy_image_to_image(cmd.platformHandle, s.drawImage.platformHandle, swapchainTexture.platformHandle, s.drawExtent, s.swapchainExtent);
 
-	transition_image(cmd, s.swapchainImages[swapchain_image_index], .TRANSFER_DST_OPTIMAL, .COLOR_ATTACHMENT_OPTIMAL);
+	transition_image(cmd.platformHandle, swapchainTexture.platformHandle, .TRANSFER_DST_OPTIMAL, .COLOR_ATTACHMENT_OPTIMAL);
 
 	// draw imgui render lists
 	attachmentInfo: VkRenderingAttachmentInfo;
-	attachmentInfo.imageView = s.swapchainImageViews[swapchain_image_index];
+	attachmentInfo.imageView = swapchainTexture.imageViewHandle;
 	attachmentInfo.imageLayout = .COLOR_ATTACHMENT_OPTIMAL;
 	attachmentInfo.loadOp = .LOAD;
 	attachmentInfo.storeOp = .STORE;
@@ -432,31 +414,13 @@ draw :: (s: *Device) {
 	renderingInfo.colorAttachmentCount = 1;
 	renderingInfo.pColorAttachments = *attachmentInfo;
 
-	vkCmdBeginRendering(cmd, *renderingInfo);
-	ImGui_ImplVulkan_RenderDrawData(ImGui.GetDrawData(), cmd);
-	vkCmdEndRendering(cmd);
+	vkCmdBeginRendering(cmd.platformHandle, *renderingInfo);
+	ImGui_ImplVulkan_RenderDrawData(ImGui.GetDrawData(), cmd.platformHandle);
+	vkCmdEndRendering(cmd.platformHandle);
 
-	transition_image(cmd, s.swapchainImages[swapchain_image_index], .COLOR_ATTACHMENT_OPTIMAL, .PRESENT_SRC_KHR);
+	transition_image(cmd.platformHandle, swapchainTexture.platformHandle, .COLOR_ATTACHMENT_OPTIMAL, .PRESENT_SRC_KHR);
 
-	vkEndCommandBuffer(cmd);
-
-	cmd_info := command_buffer_submit_info(cmd);
-
-	wait_info := semaphore_submit_info( VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR, rhi_device_get_current_frame(s).swapchainSemaphore);
-	signal_info := semaphore_submit_info( VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, rhi_device_get_current_frame(s).renderSempahore);
-
-	submit := submit_info(*cmd_info, *signal_info, *wait_info);
-	vkQueueSubmit2(s.graphicsQueue, 1, *submit, rhi_device_get_current_frame(s).renderFence);
-
-	present_info := VkPresentInfoKHR.{
-		pSwapchains = *s.swapchain,
-		swapchainCount = 1,
-		pWaitSemaphores = *rhi_device_get_current_frame(s).renderSempahore,
-		waitSemaphoreCount = 1,
-		pImageIndices = *swapchain_image_index
-	};
-	vkQueuePresentKHR(s.presentQueue, *present_info);
-	s.frame_number += 1;
+	submit(cmd);
 }
 
 draw_geometry :: (cmd: VkCommandBuffer, s: *Device) {
