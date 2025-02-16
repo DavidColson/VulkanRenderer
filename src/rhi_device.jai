@@ -10,6 +10,7 @@ ShaderStage :: enum {
 	VERTEX;
 	PIXEL;
 	COMPUTE;
+	NUM_STAGES;
 }
 
 Topology :: enum {
@@ -86,16 +87,16 @@ DepthStencil :: struct {
 MAX_COLOR_TARGETS :: 8;
 
 PipelineDesc :: struct {
-	// @todo: temporary before we have bindless, ideally no vk specific stuff in here
-	vkLayout: VkPipelineLayout;
+	layouts: []BindGroupLayout;
 	vertexShader: Shader;
 	fragmentShader: Shader;
 	topology: Topology;
 	rasterizer: RasterizerDesc;
 	colorTargetCount: s32;
-	colorTargets: [MAX_COLOR_TARGETS]ColorTarget;
+	colorTargets: []ColorTarget;
 	depthTargetFormat: PixelFormat;
 	depth: DepthStencil;
+	pushConstants: []PushConstantDesc;
 }
 
 BindingType :: enum {
@@ -128,6 +129,12 @@ BindGroupDesc :: struct {
 	layout: BindGroupLayout;
 	temp: bool = false;
 	resources: []ResourceBind;
+}
+
+PushConstantDesc :: struct {
+	stage: ShaderStage;
+	size: s32;
+	offset: s32;
 }
 
 SamplerDesc :: struct {

@@ -108,25 +108,13 @@ init_mesh_pipeline :: (using s: *Device) {
 		]
 	});
 
-	// @todo: move into pipeline desc
-	pushConstant: VkPushConstantRange;
-	pushConstant.offset = 0;
-	pushConstant.size = size_of(GpuDrawPushConstants);
-	pushConstant.stageFlags = .VERTEX_BIT;
-
-	// @todo: move this inside create_pipeline, given a list of bind group layouts
-	meshPipelineLayoutCreateInfo: VkPipelineLayoutCreateInfo;
-	meshPipelineLayoutCreateInfo.pPushConstantRanges = *pushConstant;
-	meshPipelineLayoutCreateInfo.pushConstantRangeCount = 1;
-	meshPipelineLayoutCreateInfo.pSetLayouts = *cubeMaterialBindGroupLayout.platformHandle;
-	meshPipelineLayoutCreateInfo.setLayoutCount = 1;
-
-
-	meshPipelineLayout: VkPipelineLayout;
-	vkCreatePipelineLayout(device, *meshPipelineLayoutCreateInfo, null, *meshPipelineLayout);
-
 	meshPipeline = rhi_device_create_pipeline(s, .{
-		vkLayout = meshPipelineLayout,
+		layouts = .[
+			cubeMaterialBindGroupLayout
+		],
+		pushConstants = .[
+			.{ .VERTEX, size_of(GpuDrawPushConstants), 0 }
+		],
 		vertexShader = rhi_device_create_shader(s, #run SHADER_GET("colored_triangle_mesh.vert")),
 		fragmentShader = rhi_device_create_shader(s, #run SHADER_GET("colored_triangle.frag")),
 		topology = .TRIANGLE_LIST,
@@ -136,9 +124,9 @@ init_mesh_pipeline :: (using s: *Device) {
 			frontFace = .CLOCKWISE,
 		},
 		colorTargetCount = 1,
-		colorTargets[0] = .{
+		colorTargets = .[.{
 			format = drawImage.imageFormat
-		},
+		}],
 		depthTargetFormat = depthImage.imageFormat,
 		depth = .{
 			depthWriteEnabled = true,

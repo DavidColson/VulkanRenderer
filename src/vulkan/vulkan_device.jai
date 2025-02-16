@@ -329,7 +329,28 @@ rhi_device_create_bind_group :: (using s: *Device, opts: BindGroupDesc) -> BindG
 
 rhi_device_create_pipeline :: (using s: *Device, opts: PipelineDesc) -> Pipeline {
 	pipelineInfo: VkGraphicsPipelineCreateInfo;
-	pipelineInfo.layout = opts.vkLayout;
+
+	pushConstants: [ShaderStage.NUM_STAGES]VkPushConstantRange;
+	for 0..opts.pushConstants.count-1 {
+		pushConstants[it].offset = xx opts.pushConstants[it].offset;
+		pushConstants[it].size = xx opts.pushConstants[it].size;
+		pushConstants[it].stageFlags = shader_stage_to_vk_shader_stage(opts.pushConstants[it].stage);
+	}
+
+	setLayouts: [3]VkDescriptorSetLayout;
+	for 0..opts.layouts.count-1 {
+		setLayouts[it] = opts.layouts[it].platformHandle;
+	}
+
+	layoutCreateInfo: VkPipelineLayoutCreateInfo;
+	layoutCreateInfo.pPushConstantRanges = pushConstants.data;
+	layoutCreateInfo.pushConstantRangeCount = xx opts.pushConstants.count;
+	layoutCreateInfo.pSetLayouts = setLayouts.data;
+	layoutCreateInfo.setLayoutCount = xx opts.layouts.count;
+
+	layout: VkPipelineLayout;
+	vkCreatePipelineLayout(device, *layoutCreateInfo, null, *layout);
+	pipelineInfo.layout = layout;
 
 	renderInfo: VkPipelineRenderingCreateInfo;
 	colorTargetFormats: [MAX_COLOR_TARGETS]VkFormat;
@@ -363,7 +384,7 @@ rhi_device_create_pipeline :: (using s: *Device, opts: PipelineDesc) -> Pipeline
 	viewportState.viewportCount = 1;
 	viewportState.scissorCount = 1;
 	pipelineInfo.pViewportState = *viewportState;
-	
+
 	rasterizer: VkPipelineRasterizationStateCreateInfo;
 	rasterizer.polygonMode = polygon_mode_to_vk_polygon_mode(opts.rasterizer.polygonMode);
 	rasterizer.cullMode = cull_mode_to_vk_cull_mode(opts.rasterizer.cullMode);
@@ -412,7 +433,7 @@ rhi_device_create_pipeline :: (using s: *Device, opts: PipelineDesc) -> Pipeline
 	pipelineInfo.pDynamicState = *dynamicInfo;
 
 	pipeline: Pipeline;
-	pipeline.pipelineLayout = opts.vkLayout;
+	pipeline.pipelineLayout = layout;
 	if vkCreateGraphicsPipelines(s.device, VK_NULL_HANDLE, 1, *pipelineInfo, null, *pipeline.platformHandle) == .SUCCESS {
 		return pipeline;
 	}
