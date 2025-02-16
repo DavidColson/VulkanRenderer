@@ -29,9 +29,36 @@ HEIGHT :: 600;
 // wait_for_swapchain_texture() -- acquires a swapchain texture for rendering into. As with SDL, when this occurs, automatically present when the command buffer is submitted
 // all the things you can do with a command buffer
 
+// @todo not used yet
 RendererState :: struct {
 	device: Device;
 	meshPipeline: Pipeline;
+}
+
+ComputePushConstants :: struct {
+	data1: Vector4;
+	data2: Vector4;
+	data3: Vector4;
+	data4: Vector4;
+}
+
+Vertex :: struct {
+	position: Vector3;
+	uv_x: float;
+	normal: Vector3;
+	uv_y: float;
+	color: Vector4;
+}
+
+GpuMeshBuffers :: struct {
+	indexBuffer: Buffer;
+	vertexBuffer: Buffer;
+	deviceAddress: VkDeviceAddress;
+}
+
+GpuDrawPushConstants :: struct {
+	worldMatrix: Matrix4;
+	vertexBuffer: VkDeviceAddress;
 }
 
 main :: () {
@@ -53,6 +80,7 @@ main :: () {
 
 	device: Device;
 	rhi_device_init(*device, window, WIDTH, HEIGHT);
+	init_compute_pipeline(*device);
 	init_mesh_pipeline(*device);
 	init_cube_mesh(*device);
 
@@ -75,7 +103,56 @@ main :: () {
 		}
 		draw(*device);
 		reset_temporary_storage();
+		rhi_device_reset_temporary_memory(*device);
 	}
+}
+
+init_compute_pipeline :: (using s: *Device) {
+	computeBindGroupLayout = rhi_device_create_bind_group_layout(s, .{
+		bindings = .[
+			.{0, .STORAGE_IMAGE, .COMPUTE }
+		]
+	});
+
+	computeBindGroup = rhi_device_create_bind_group(s, .{
+		layout = computeBindGroupLayout,
+		resources = .[
+			.{slot = 0, texture = drawImage }
+		]
+	});
+
+	// @todo compute pipeline, to refactor into rhi style
+	computeLayout: VkPipelineLayoutCreateInfo;
+	computeLayout.pSetLayouts = *computeBindGroupLayout.platformHandle;
+	computeLayout.setLayoutCount = 1;
+
+	pushConstant: VkPushConstantRange;
+	pushConstant.offset = 0;
+	pushConstant.size = size_of(ComputePushConstants);
+	pushConstant.stageFlags = .COMPUTE_BIT;
+
+	computeLayout.pPushConstantRanges = *pushConstant;
+	computeLayout.pushConstantRangeCount = 1;
+	vkCreatePipelineLayout(device, *computeLayout, null, *computePipelineLayout);
+
+	// compile time load the shader binary
+	// @todo potentially you can auto create these constants in the build code for each filename that gets compiled
+	GRADIENT_SHADER :: #run SHADER_GET("gradient.comp");
+	computeDrawShader := rhi_device_create_shader(s, GRADIENT_SHADER);
+
+	stageInfo: VkPipelineShaderStageCreateInfo;
+	stageInfo.stage = .COMPUTE_BIT;
+	stageInfo.module = computeDrawShader.platformHandle;
+	stageInfo.pName = "main";
+
+	computePipelineCreateInfo: VkComputePipelineCreateInfo;
+	computePipelineCreateInfo.layout = computePipelineLayout;
+	computePipelineCreateInfo.stage = stageInfo;
+
+	result := vkCreateComputePipelines(device, null, 1, *computePipelineCreateInfo, null, *computePipeline);
+	assert(result == .SUCCESS, "Failed to create compute pipeline");
+
+	vkDestroyShaderModule(device, computeDrawShader.platformHandle, null);
 }
 
 init_mesh_pipeline :: (using s: *Device) {
@@ -322,10 +399,10 @@ draw :: (s: *Device) {
 	// vkCmdClearColorImage(cmd, s.drawImage.image, .GENERAL, *clear_value, 1, *clear_range);
 
 	// compute to draw our gradient
-	vkCmdBindPipeline(cmd, .COMPUTE, s.gradientPipeline);
-	vkCmdBindDescriptorSets(cmd, .COMPUTE, s.gradientPipelineLayout, 0, 1, *s.drawImageDescriptors, 0, null);
+	vkCmdBindPipeline(cmd, .COMPUTE, s.computePipeline);
+	vkCmdBindDescriptorSets(cmd, .COMPUTE, s.computePipelineLayout, 0, 1, *s.computeBindGroup.platformHandle, 0, null);
 
-	vkCmdPushConstants(cmd, s.gradientPipelineLayout, .COMPUTE_BIT, 0, size_of(ComputePushConstants), *s.pc);
+	vkCmdPushConstants(cmd, s.computePipelineLayout, .COMPUTE_BIT, 0, size_of(ComputePushConstants), *s.pc);
 	vkCmdDispatch(cmd, xx ceil(s.drawExtent.width / 16.0), xx ceil(s.drawExtent.width / 16.0), 1);
 
 

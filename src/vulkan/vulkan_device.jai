@@ -25,26 +25,19 @@ Device :: struct {
 	globalDescriptorPool: DescriptorPool;
 	perFrameDescriptorPool: DescriptorPool;
 
-	// old descriptor management
-	globalDescriptorAllocator: DescriptorAllocator;
-	drawImageDescriptors: VkDescriptorSet;
-	drawImageDescriptorLayout: VkDescriptorSetLayout;
-
 	imguiDescriptorPool: VkDescriptorPool;
-
-	gradientPipeline: VkPipeline;
-	gradientPipelineLayout: VkPipelineLayout;
-
-	trianglePipeline: VkPipeline;
-	trianglePipelineLayout: VkPipelineLayout;
 
 	// @todo: move out of rhi to higher level rendering
 	meshPipeline: Pipeline;
 	cubeMesh: GpuMeshBuffers;
 	crateTexture: Texture;
 	linearSampler: Sampler;
-	cubeMaterialBindGroup: BindGroup;
 	cubeMaterialBindGroupLayout: BindGroupLayout;
+	cubeMaterialBindGroup: BindGroup;
+	computeBindGroupLayout: BindGroupLayout;
+	computeBindGroup: BindGroup;
+	computePipeline: VkPipeline;
+	computePipelineLayout: VkPipelineLayout;
 
 	immediateFence: VkFence;
 	immediateCommandBuffer: VkCommandBuffer;
@@ -70,34 +63,7 @@ FrameData :: struct
 	renderFence: VkFence;
 }
 
-
-ComputePushConstants :: struct {
-	data1: Vector4;
-	data2: Vector4;
-	data3: Vector4;
-	data4: Vector4;
-}
-
-Vertex :: struct {
-	position: Vector3;
-	uv_x: float;
-	normal: Vector3;
-	uv_y: float;
-	color: Vector4;
-}
-
-GpuMeshBuffers :: struct {
-	indexBuffer: Buffer;
-	vertexBuffer: Buffer;
-	deviceAddress: VkDeviceAddress;
-}
-
-GpuDrawPushConstants :: struct {
-	worldMatrix: Matrix4;
-	vertexBuffer: VkDeviceAddress;
-}
-
-// Resources
+// Exposed Resources (that have vulkan specific members)
 
 BindGroupLayout :: struct {
 	platformHandle: VkDescriptorSetLayout = VK_NULL_HANDLE;
@@ -151,10 +117,7 @@ rhi_device_init :: (s: *Device, window: *SDL_Window, width: s32, height: s32) {
 	init_swapchain_image_views(s);
 	init_commands(s);
 	init_sync_structures(s);
-	init_descriptors(s);
-	init_pipelines(s);
 	init_imgui(s);
-	// init_triangle_pipeline(s);
 
 	s.pc.data1 = Vector4.{1, 0, 0, 1};
 	s.pc.data2 = Vector4.{0, 0, 1, 1};
@@ -1088,75 +1051,6 @@ init_sync_structures :: (state: *Device) {
 	}
 }
 
-init_descriptors :: (state: *Device) {
-	using state;
-
-
-	sizes := PoolSizeRatio.[.{ .STORAGE_IMAGE, 1 }, .{ .COMBINED_IMAGE_SAMPLER, 1}];
-
-	globalDescriptorAllocator = init_pool(device, 10, sizes);
-	
-	// draw image descriptors setup
-	{
-		builder: DescriptorLayoutBuilder;
-		add_binding_to_builder(*builder, 0, .STORAGE_IMAGE);
-		drawImageDescriptorLayout = build_descriptor_layout(*builder, device, .COMPUTE_BIT);
-
-		drawImageDescriptors = allocate_descriptor_set(*globalDescriptorAllocator, device, drawImageDescriptorLayout);
-
-		imgInfo: VkDescriptorImageInfo;
-		imgInfo.imageLayout = .GENERAL;
-		imgInfo.imageView = drawImage.imageViewHandle;
-
-		drawImageWrite: VkWriteDescriptorSet;
-		drawImageWrite.dstSet = drawImageDescriptors;
-		drawImageWrite.descriptorCount = 1;
-		drawImageWrite.descriptorType = .STORAGE_IMAGE;
-		drawImageWrite.pImageInfo = *imgInfo;
-
-		vkUpdateDescriptorSets(device, 1, *drawImageWrite, 0, null);
-	}
-}
-
-init_pipelines :: (state: *Device) {
-	init_background_pipelines(state);
-}
-
-init_background_pipelines :: (state: *Device) {
-	using state;
-	computeLayout: VkPipelineLayoutCreateInfo;
-	computeLayout.pSetLayouts = *drawImageDescriptorLayout;
-	computeLayout.setLayoutCount = 1;
-
-	pushConstant: VkPushConstantRange;
-	pushConstant.offset = 0;
-	pushConstant.size = size_of(ComputePushConstants);
-	pushConstant.stageFlags = .COMPUTE_BIT;
-
-	computeLayout.pPushConstantRanges = *pushConstant;
-	computeLayout.pushConstantRangeCount = 1;
-	vkCreatePipelineLayout(device, *computeLayout, null, *gradientPipelineLayout);
-
-	// compile time load the shader binary
-	// @todo potentially you can auto create these constants in the build code for each filename that gets compiled
-	GRADIENT_SHADER :: #run SHADER_GET("gradient.comp");
-	computeDrawShader := rhi_device_create_shader(state, GRADIENT_SHADER);
-
-	stageInfo: VkPipelineShaderStageCreateInfo;
-	stageInfo.stage = .COMPUTE_BIT;
-	stageInfo.module = computeDrawShader.platformHandle;
-	stageInfo.pName = "main";
-
-	computePipelineCreateInfo: VkComputePipelineCreateInfo;
-	computePipelineCreateInfo.layout = gradientPipelineLayout;
-	computePipelineCreateInfo.stage = stageInfo;
-
-	result := vkCreateComputePipelines(device, null, 1, *computePipelineCreateInfo, null, *gradientPipeline);
-	assert(result == .SUCCESS, "Failed to create compute pipeline");
-
-	vkDestroyShaderModule(device, computeDrawShader.platformHandle, null);
-}
-
 alloc_imgui :: (sz: u64, user_data: *void) -> *void #c_call
 {
 	new_context: Context;
@@ -1568,7 +1462,6 @@ image_view_create_info :: (format: VkFormat, image: VkImage, aspectFlags: VkImag
 #import "vulkan";
 #import "vma";
 
-#load "descriptors.jai";
 #load "../imgui_backend.jai";
 
 VALIDATION_ENABLED :: BUILD_TYPE != .RELEASE;
