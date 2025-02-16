@@ -126,6 +126,7 @@ ResourceBind :: struct {
 
 BindGroupDesc :: struct {
 	layout: BindGroupLayout;
+	temp: bool = false;
 	resources: []ResourceBind;
 }
 

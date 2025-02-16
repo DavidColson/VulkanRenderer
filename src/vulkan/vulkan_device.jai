@@ -21,6 +21,11 @@ Device :: struct {
 	swapchainImages: [..] VkImage;
 	swapchainImageViews: [..] VkImageView;
 
+	// new descriptor management
+	globalDescriptorPool: DescriptorPool;
+	perFrameDescriptorPool: DescriptorPool;
+
+	// old descriptor management
 	globalDescriptorAllocator: DescriptorAllocator;
 	drawImageDescriptors: VkDescriptorSet;
 	drawImageDescriptorLayout: VkDescriptorSetLayout;
@@ -97,11 +102,12 @@ GpuDrawPushConstants :: struct {
 BindGroupLayout :: struct {
 	platformHandle: VkDescriptorSetLayout = VK_NULL_HANDLE;
 	bindings: []Binding;
-	descriptorSetPool: DescriptorSetPool;
 }
 
 BindGroup :: struct {
 	platformHandle: VkDescriptorSet = VK_NULL_HANDLE;
+	allocatedFrom: VkDescriptorPool;
+	canBeFreed: bool;
 }
 
 Pipeline :: struct {
@@ -187,7 +193,6 @@ rhi_device_create_bind_group_layout :: (using s: *Device, opts: BindGroupLayoutD
 	info.pNext = null;
 	info.flags = 0;
 
-	bindingTypeCounts: [BindingType.NUM_BINDING_TYPES]s32;
 	bindings : [..]VkDescriptorSetLayoutBinding;
 	bindings.allocator = temp;
 	for 0..opts.bindings.count-1 {
@@ -197,7 +202,6 @@ rhi_device_create_bind_group_layout :: (using s: *Device, opts: BindGroupLayoutD
 		newBind.descriptorType = binding_type_to_vk_descriptor_type(opts.bindings[it].type);
 		newBind.stageFlags = shader_stage_to_vk_shader_stage(opts.bindings[it].shaderStage);
 		array_add(*bindings, newBind);
-		bindingTypeCounts[opts.bindings[it].type] += 1;
 	}
 	info.pBindings = bindings.data;
 	info.bindingCount = xx bindings.count;
@@ -206,53 +210,62 @@ rhi_device_create_bind_group_layout :: (using s: *Device, opts: BindGroupLayoutD
 	result := vkCreateDescriptorSetLayout(s.device, *info, null, *layout.platformHandle);
 	assert(result == .SUCCESS, "Could not create descriptor set layout");
 
-	poolSizes: [..]VkDescriptorPoolSize;
-	for 0..bindingTypeCounts.count-1 {
-		if bindingTypeCounts[it] > 0 {
-			array_add(*poolSizes, VkDescriptorPoolSize.{ type = binding_type_to_vk_descriptor_type(cast(BindingType) it), descriptorCount = xx bindingTypeCounts[it] }); 
-		}
-	}
-	layout.descriptorSetPool.poolSizes = poolSizes;
 	layout.bindings = opts.bindings;
 	return layout;
 }
 
 rhi_device_create_bind_group :: (using s: *Device, opts: BindGroupDesc) -> BindGroup {
-	// allocate a descriptor set from the pool (expanding pool if needed)
-	setPool := *opts.layout.descriptorSetPool;
-	if setPool.descriptorSetIndex == setPool.descriptorSets.count {
-		// pools are full, need to allocate a new group of descriptor sets
+	pool := *s.globalDescriptorPool;
+	if opts.temp {
+		pool = *s.perFrameDescriptorPool;
+	}
+
+	create_new_pool :: (using s: *Device) -> VkDescriptorPool {
+		poolSizes: []VkDescriptorPoolSize = .[
+			.{type = .SAMPLER, descriptorCount = 20 },
+			.{type = .SAMPLED_IMAGE, descriptorCount = 100 },
+			.{type = .STORAGE_IMAGE, descriptorCount = 50 },
+			.{type = .UNIFORM_BUFFER, descriptorCount = 100 },
+			.{type = .STORAGE_BUFFER, descriptorCount = 100 },
+		];
+
 		poolInfo: VkDescriptorPoolCreateInfo;
-		poolInfo.flags = 0;
-		poolInfo.maxSets = DESCRIPTOR_POOL_SIZE;
-		poolInfo.poolSizeCount = xx setPool.poolSizes.count;
-		poolInfo.pPoolSizes = setPool.poolSizes.data;
+		poolInfo.flags = .FREE_DESCRIPTOR_SET_BIT;
+		poolInfo.maxSets = 20;
+		poolInfo.poolSizeCount = xx poolSizes.count;
+		poolInfo.pPoolSizes = poolSizes.data;
 
 		pool: VkDescriptorPool;
 		result := vkCreateDescriptorPool(device, *poolInfo, null, *pool);
-		array_add(*setPool.pools, pool);
-		assert(result == .SUCCESS, "Failed to create descriptor pool");
-
-		array_reserve(*setPool.descriptorSets, setPool.descriptorSets.count + DESCRIPTOR_POOL_SIZE);
-
-		setLayouts: [DESCRIPTOR_POOL_SIZE]VkDescriptorSetLayout;
-		for 0..DESCRIPTOR_POOL_SIZE-1 {
-			setLayouts[it] = opts.layout.platformHandle;
-		}
-
-		allocInfo: VkDescriptorSetAllocateInfo;
-		allocInfo.descriptorPool = pool;
-		allocInfo.descriptorSetCount = DESCRIPTOR_POOL_SIZE;
-		allocInfo.pSetLayouts = setLayouts.data;
-
-		result = vkAllocateDescriptorSets(device, *allocInfo, setPool.descriptorSets.data + setPool.descriptorSets.count);
-		assert(result == .SUCCESS, "Failed to allocate descriptor set");
-		setPool.descriptorSets.count += DESCRIPTOR_POOL_SIZE;
+		return pool;
 	}
 
-	descriptorSet := setPool.descriptorSets[setPool.descriptorSetIndex];
-	setPool.descriptorSetIndex += 1;
-	
+	// attempt allocation in top most pool
+	if pool.pools.count == 0 {
+		array_add(*pool.pools, create_new_pool(s));
+	}
+
+	allocInfo: VkDescriptorSetAllocateInfo;
+	allocInfo.descriptorPool = pool.pools[pool.pools.count-1];
+	allocInfo.descriptorSetCount = 1;
+	allocInfo.pSetLayouts = *opts.layout.platformHandle;
+
+	descriptorSet: VkDescriptorSet;
+	result := vkAllocateDescriptorSets(device, *allocInfo, *descriptorSet);
+
+	// if it fails, make a new pool
+	if result == .ERROR_OUT_OF_POOL_MEMORY || result == .ERROR_FRAGMENTED_POOL {
+		array_add(*pool.pools, create_new_pool(s));
+		allocInfo.descriptorPool = pool.pools[pool.pools.count-1];
+		result = vkAllocateDescriptorSets(device, *allocInfo, *descriptorSet);
+	}
+
+	// count descriptor type allocations in the pool (mostly for tracking how well we've balanced the pool sizes)
+	for 0..opts.layout.bindings.count-1 {
+		pool.descriptorCounts[opts.layout.bindings[it].type] += 1; 
+	}
+
+	// write the resources to the descriptor set
 	writeDescriptorSets: [..]VkWriteDescriptorSet;
 	writeDescriptorSets.allocator = temp;
 
@@ -309,6 +322,8 @@ rhi_device_create_bind_group :: (using s: *Device, opts: BindGroupDesc) -> BindG
 
 	bindGroup: BindGroup;
 	bindGroup.platformHandle = descriptorSet;
+	bindGroup.allocatedFrom = allocInfo.descriptorPool;
+	bindGroup.canBeFreed = !opts.temp;
 	return bindGroup;
 }
 
@@ -508,6 +523,18 @@ rhi_device_destroy_buffer :: (s: *Device, buffer: *Buffer) {
 	vmaDestroyBuffer(s.gpuAllocator, buffer.buffer, buffer.allocation);
 }
 
+rhi_device_destroy_bind_group :: (using s: *Device, bindGroup: BindGroup) {
+	if bindGroup.canBeFreed {
+		vkFreeDescriptorSets(device, bindGroup.allocatedFrom, 1, *bindGroup.platformHandle);
+	}
+}
+
+rhi_device_reset_temporary_memory :: (using s: *Device) {
+	for 0..s.perFrameDescriptorPool.pools.count-1 {
+		vkResetDescriptorPool(device, perFrameDescriptorPool.pools[it], 0); 
+	}
+}
+
 // evaluate if these functions definitely need to be exposed once more vulkan stuff is removed from main
 rhi_device_begin_immediate_submit :: (using s: *Device) {
 	result := vkResetFences(device, 1, *immediateFence);
@@ -596,18 +623,6 @@ submit_info :: ( cmd: *VkCommandBufferSubmitInfo, signal_semaphore_info: *VkSema
 }
 
 #scope_file
-
-// internal types
-
-DESCRIPTOR_POOL_SIZE :: 32;
-
-DescriptorSetPool :: struct {
-	poolSizes: [..]VkDescriptorPoolSize;
-	pools: [..]VkDescriptorPool;
-
-	descriptorSets: [..]VkDescriptorSet;
-	descriptorSetIndex: s32;
-}
 
 // Enum converters
 
@@ -1468,6 +1483,13 @@ image_subresource_range :: (aspect_mask: VkImageAspectFlags) -> VkImageSubresour
     sub_image.levelCount = VK_REMAINING_MIP_LEVELS;
     sub_image.layerCount = VK_REMAINING_ARRAY_LAYERS;
     return sub_image;
+}
+
+// descriptor pool management
+
+DescriptorPool :: struct {
+	pools: [..]VkDescriptorPool;
+	descriptorCounts: [BindingType.NUM_BINDING_TYPES]u32;
 }
 
 // createinfos
