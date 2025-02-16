@@ -556,14 +556,6 @@ copy_image_to_image :: (cmd: VkCommandBuffer, source: VkImage, destination: VkIm
 	vkCmdBlitImage2(cmd, *blitInfo);
 }
 
-semaphore_submit_info :: ( stage_mask: VkPipelineStageFlags2, semaphore: VkSemaphore) -> VkSemaphoreSubmitInfo {
-	submit_info: VkSemaphoreSubmitInfo;
-	submit_info.semaphore = semaphore;
-	submit_info.stageMask = stage_mask;
-	submit_info.value = 1;
-	return submit_info;
-}  
-
 #scope_file
 
 // Type converters
