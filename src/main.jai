@@ -108,14 +108,14 @@ main :: () {
 	}
 }
 
-init_compute_pipeline :: (using s: *Device) {
-	computeBindGroupLayout = rhi_device_create_bind_group_layout(s, .{
+init_compute_pipeline :: (using dev: *Device) {
+	computeBindGroupLayout = rhi_device_create_bind_group_layout(dev, .{
 		bindings = .[
 			.{0, .STORAGE_IMAGE, .COMPUTE }
 		]
 	});
 
-	computeBindGroup = rhi_device_create_bind_group(s, .{
+	computeBindGroup = rhi_device_create_bind_group(dev, .{
 		layout = computeBindGroupLayout,
 		resources = .[
 			.{slot = 0, texture = drawImage }
@@ -134,12 +134,12 @@ init_compute_pipeline :: (using s: *Device) {
 
 	computeLayout.pPushConstantRanges = *pushConstant;
 	computeLayout.pushConstantRangeCount = 1;
-	vkCreatePipelineLayout(device, *computeLayout, null, *computePipelineLayout);
+	vkCreatePipelineLayout(dev.vkDevice, *computeLayout, null, *computePipelineLayout);
 
 	// compile time load the shader binary
 	// @todo potentially you can auto create these constants in the build code for each filename that gets compiled
 	GRADIENT_SHADER :: #run SHADER_GET("gradient.comp");
-	computeDrawShader := rhi_device_create_shader(s, GRADIENT_SHADER);
+	computeDrawShader := rhi_device_create_shader(dev, GRADIENT_SHADER);
 
 	stageInfo: VkPipelineShaderStageCreateInfo;
 	stageInfo.stage = .COMPUTE_BIT;
@@ -150,20 +150,20 @@ init_compute_pipeline :: (using s: *Device) {
 	computePipelineCreateInfo.layout = computePipelineLayout;
 	computePipelineCreateInfo.stage = stageInfo;
 
-	result := vkCreateComputePipelines(device, null, 1, *computePipelineCreateInfo, null, *computePipeline);
+	result := vkCreateComputePipelines(dev.vkDevice, null, 1, *computePipelineCreateInfo, null, *computePipeline);
 	assert(result == .SUCCESS, "Failed to create compute pipeline");
 
-	vkDestroyShaderModule(device, computeDrawShader.platformHandle, null);
+	vkDestroyShaderModule(dev.vkDevice, computeDrawShader.platformHandle, null);
 }
 
-init_mesh_pipeline :: (using s: *Device) {
+init_mesh_pipeline :: (using dev: *Device) {
 	// load the texture for the cube
 	{
 		x, y: s32;
 		comp: s32;
 		imageData: *u8 = stbi_load("crate.png", *x, *y, *comp, 4);
 
-		crateTexture = rhi_device_create_texture(s, .{
+		crateTexture = rhi_device_create_texture(dev, .{
 			format = .RGBA8,
 			size = .{ width = x, height = y, depth=1},
 			usage = .READ_ONLY,
@@ -171,19 +171,19 @@ init_mesh_pipeline :: (using s: *Device) {
 		});
 	}
 
-	linearSampler = rhi_device_create_sampler(s, .{
+	linearSampler = rhi_device_create_sampler(dev, .{
 		magFilter = .LINEAR,
 		minFilter = .LINEAR,
 	});
 
-	cubeMaterialBindGroupLayout = rhi_device_create_bind_group_layout(s, .{
+	cubeMaterialBindGroupLayout = rhi_device_create_bind_group_layout(dev, .{
 		bindings = .[
 			.{ 0, .SAMPLED_IMAGE, .PIXEL },
 			.{ 1, .SAMPLER, .PIXEL },
 		]
 	});
 
-	cubeMaterialBindGroup = rhi_device_create_bind_group(s, .{
+	cubeMaterialBindGroup = rhi_device_create_bind_group(dev, .{
 		layout = cubeMaterialBindGroupLayout,
 		resources = .[
 			.{slot = 0, texture = crateTexture},
@@ -191,15 +191,15 @@ init_mesh_pipeline :: (using s: *Device) {
 		]
 	});
 
-	meshPipeline = rhi_device_create_pipeline(s, .{
+	meshPipeline = rhi_device_create_pipeline(dev, .{
 		layouts = .[
 			cubeMaterialBindGroupLayout
 		],
 		pushConstants = .[
 			.{ .VERTEX, size_of(GpuDrawPushConstants), 0 }
 		],
-		vertexShader = rhi_device_create_shader(s, #run SHADER_GET("colored_triangle_mesh.vert")),
-		fragmentShader = rhi_device_create_shader(s, #run SHADER_GET("colored_triangle.frag")),
+		vertexShader = rhi_device_create_shader(dev, #run SHADER_GET("colored_triangle_mesh.vert")),
+		fragmentShader = rhi_device_create_shader(dev, #run SHADER_GET("colored_triangle.frag")),
 		topology = .TRIANGLE_LIST,
 		rasterizer = .{
 			polygonMode = .FILL,
@@ -219,7 +219,7 @@ init_mesh_pipeline :: (using s: *Device) {
 	});
 }
 
-init_cube_mesh :: (using s: *Device) {
+init_cube_mesh :: (using dev: *Device) {
 	cubeVerts : [8]Vertex;
 	
 	// front side
@@ -285,16 +285,16 @@ init_cube_mesh :: (using s: *Device) {
         4, 5, 7
 	];
 
-	cubeMesh = upload_mesh(s, cubeIndices, cubeVerts);
+	cubeMesh = upload_mesh(dev, cubeIndices, cubeVerts);
 }
 
-upload_mesh :: (s: *Device, indices: []u32, vertices: []Vertex) -> GpuMeshBuffers {
+upload_mesh :: (dev: *Device, indices: []u32, vertices: []Vertex) -> GpuMeshBuffers {
 	vertexBufferSize := vertices.count * size_of(Vertex);
 	indexBufferSize := indices.count * size_of(u32);
 
 	mesh: GpuMeshBuffers;
 
-	mesh.vertexBuffer = rhi_device_create_buffer(s, .{
+	mesh.vertexBuffer = rhi_device_create_buffer(dev, .{
 		size = xx vertexBufferSize,
 		usage = .READ_AND_WRITE | .COPY_DST | .SHADER_DEVICE_ADDRESS,
 		memory = .GPU_ONLY
@@ -302,17 +302,17 @@ upload_mesh :: (s: *Device, indices: []u32, vertices: []Vertex) -> GpuMeshBuffer
 
 	deviceAddressInfo: VkBufferDeviceAddressInfo;
 	deviceAddressInfo.buffer = mesh.vertexBuffer.buffer;
-	mesh.deviceAddress = vkGetBufferDeviceAddress(s.device, *deviceAddressInfo);
+	mesh.deviceAddress = vkGetBufferDeviceAddress(dev.vkDevice, *deviceAddressInfo);
 
-	mesh.indexBuffer = rhi_device_create_buffer(s, .{
+	mesh.indexBuffer = rhi_device_create_buffer(dev, .{
 		size = xx indexBufferSize,
 		usage = .INDEX_BUFFER | .COPY_DST,
 		memory = .GPU_ONLY
 	});
 
-	// here's where the actual data upload happens
-	// it's doing a full immediate submit, should research how to do this better
-	staging := rhi_device_create_buffer(s, .{
+	// here'dev where the actual data upload happens
+	// it'dev doing a full immediate submit, should research how to do this better
+	staging := rhi_device_create_buffer(dev, .{
 		size = xx (vertexBufferSize + indexBufferSize),
 		usage = .COPY_SRC,
 		memory = .CPU_ONLY
@@ -323,7 +323,7 @@ upload_mesh :: (s: *Device, indices: []u32, vertices: []Vertex) -> GpuMeshBuffer
 	memcpy(data, vertices.data, vertexBufferSize);
 	memcpy(cast(*u8)data + vertexBufferSize, indices.data, indexBufferSize);
 
-	cmd := rhi_device_acquire_command_buffer(s);
+	cmd := rhi_device_acquire_command_buffer(dev);
 
 	vertexCopy: VkBufferCopy;
 	vertexCopy.dstOffset = 0;
@@ -341,7 +341,7 @@ upload_mesh :: (s: *Device, indices: []u32, vertices: []Vertex) -> GpuMeshBuffer
 	return mesh;
 }
 
-draw :: (s: *Device) {
+draw :: (dev: *Device) {
 	ImGui_ImplVulkan_NewFrame();
 	ImGui_ImplSDL2_NewFrame();
 	ImGui.NewFrame();
@@ -359,46 +359,49 @@ draw :: (s: *Device) {
 
 	ImGui.Render();
 
-	cmd := rhi_device_acquire_command_buffer(s);
+	cmd := rhi_device_acquire_command_buffer(dev);
 
 	swapchainTexture := wait_and_acquire_swapchain_texture(cmd);
 
-	s.drawExtent.width = xx s.drawImage.size.width;
-	s.drawExtent.height = xx s.drawImage.size.height;
+	dev.drawExtent.width = xx dev.drawImage.size.width;
+	dev.drawExtent.height = xx dev.drawImage.size.height;
 
 
-	transition_image(cmd.platformHandle, s.drawImage.platformHandle, .UNDEFINED, .GENERAL);
+	// barrier for starting compute pass (draw image goes to write)
+	transition_image(cmd.platformHandle, dev.drawImage.platformHandle, .UNDEFINED, .GENERAL);
 
 	// draw background with compute
 	////////////////////////////////
 
 	// Actually clear our screen
 	// clear_value: VkClearColorValue;
-	// flash := abs(sin(cast(float32)s.frame_number / 1020.0));
+	// flash := abs(sin(cast(float32)dev.frame_number / 1020.0));
 	// clear_value._float32 = float32.[0.0, 0.0, xx flash, 1.0];
 	//  
 	// clear_range := image_subresource_range(.COLOR_BIT);
-	// vkCmdClearColorImage(cmd, s.drawImage.image, .GENERAL, *clear_value, 1, *clear_range);
+	// vkCmdClearColorImage(cmd, dev.drawImage.image, .GENERAL, *clear_value, 1, *clear_range);
 
 	// compute to draw our gradient
-	vkCmdBindPipeline(cmd.platformHandle, .COMPUTE, s.computePipeline);
-	vkCmdBindDescriptorSets(cmd.platformHandle, .COMPUTE, s.computePipelineLayout, 0, 1, *s.computeBindGroup.platformHandle, 0, null);
+	vkCmdBindPipeline(cmd.platformHandle, .COMPUTE, dev.computePipeline);
+	vkCmdBindDescriptorSets(cmd.platformHandle, .COMPUTE, dev.computePipelineLayout, 0, 1, *dev.computeBindGroup.platformHandle, 0, null);
 
-	vkCmdPushConstants(cmd.platformHandle, s.computePipelineLayout, .COMPUTE_BIT, 0, size_of(ComputePushConstants), *s.pc);
-	vkCmdDispatch(cmd.platformHandle, xx ceil(s.drawExtent.width / 16.0), xx ceil(s.drawExtent.width / 16.0), 1);
+	vkCmdPushConstants(cmd.platformHandle, dev.computePipelineLayout, .COMPUTE_BIT, 0, size_of(ComputePushConstants), *dev.pc);
+	vkCmdDispatch(cmd.platformHandle, xx ceil(dev.drawExtent.width / 16.0), xx ceil(dev.drawExtent.width / 16.0), 1);
 
+	// rendering pass barrier (targets go to write)
+	transition_image(cmd.platformHandle, dev.drawImage.platformHandle, .GENERAL, .COLOR_ATTACHMENT_OPTIMAL);
+	transition_image(cmd.platformHandle, dev.depthImage.platformHandle, .UNDEFINED, .DEPTH_ATTACHMENT_OPTIMAL);
 
-	transition_image(cmd.platformHandle, s.drawImage.platformHandle, .GENERAL, .COLOR_ATTACHMENT_OPTIMAL);
-	transition_image(cmd.platformHandle, s.depthImage.platformHandle, .UNDEFINED, .DEPTH_ATTACHMENT_OPTIMAL);
-
-	draw_geometry(cmd.platformHandle, s);
+	draw_geometry(cmd.platformHandle, dev);
 
 	// blit our frame onto the swapchain
-	transition_image(cmd.platformHandle, s.drawImage.platformHandle, .COLOR_ATTACHMENT_OPTIMAL, .TRANSFER_SRC_OPTIMAL);
+	// blit barrier (target goes to write, source goes to read optimal)
+	transition_image(cmd.platformHandle, dev.drawImage.platformHandle, .COLOR_ATTACHMENT_OPTIMAL, .TRANSFER_SRC_OPTIMAL);
 	transition_image(cmd.platformHandle, swapchainTexture.platformHandle, .UNDEFINED, .TRANSFER_DST_OPTIMAL);
 
-	copy_image_to_image(cmd.platformHandle, s.drawImage.platformHandle, swapchainTexture.platformHandle, s.drawExtent, s.swapchainExtent);
+	copy_image_to_image(cmd.platformHandle, dev.drawImage.platformHandle, swapchainTexture.platformHandle, dev.drawExtent, dev.swapchainExtent);
 
+	// new render pass (write target barrier)
 	transition_image(cmd.platformHandle, swapchainTexture.platformHandle, .TRANSFER_DST_OPTIMAL, .COLOR_ATTACHMENT_OPTIMAL);
 
 	// draw imgui render lists
@@ -409,7 +412,7 @@ draw :: (s: *Device) {
 	attachmentInfo.storeOp = .STORE;
 
 	renderingInfo: VkRenderingInfo;
-	renderingInfo.renderArea.extent = s.swapchainExtent;
+	renderingInfo.renderArea.extent = dev.swapchainExtent;
 	renderingInfo.layerCount = 1;
 	renderingInfo.colorAttachmentCount = 1;
 	renderingInfo.pColorAttachments = *attachmentInfo;
@@ -418,26 +421,27 @@ draw :: (s: *Device) {
 	ImGui_ImplVulkan_RenderDrawData(ImGui.GetDrawData(), cmd.platformHandle);
 	vkCmdEndRendering(cmd.platformHandle);
 
+	// barrier swapchain goes to present
 	transition_image(cmd.platformHandle, swapchainTexture.platformHandle, .COLOR_ATTACHMENT_OPTIMAL, .PRESENT_SRC_KHR);
 
 	submit(cmd);
 }
 
-draw_geometry :: (cmd: VkCommandBuffer, s: *Device) {
+draw_geometry :: (cmd: VkCommandBuffer, dev: *Device) {
 	colorAttachment: VkRenderingAttachmentInfo;
-	colorAttachment.imageView = s.drawImage.imageViewHandle;
+	colorAttachment.imageView = dev.drawImage.imageViewHandle;
 	colorAttachment.imageLayout = .COLOR_ATTACHMENT_OPTIMAL;
 	colorAttachment.loadOp = .LOAD;
 	colorAttachment.storeOp = .STORE;
 	depthAttachment: VkRenderingAttachmentInfo;
-	depthAttachment.imageView = s.depthImage.imageViewHandle;
+	depthAttachment.imageView = dev.depthImage.imageViewHandle;
 	depthAttachment.imageLayout = .DEPTH_ATTACHMENT_OPTIMAL;
 	depthAttachment.loadOp = .CLEAR;
 	depthAttachment.storeOp = .STORE;
 	depthAttachment.clearValue.depthStencil.depth = 0;
 
 	renderingInfo: VkRenderingInfo;
-	renderingInfo.renderArea.extent = s.drawExtent;
+	renderingInfo.renderArea.extent = dev.drawExtent;
 	renderingInfo.layerCount = 1;
 	renderingInfo.colorAttachmentCount = 1;
 	renderingInfo.pColorAttachments = *colorAttachment;
@@ -449,8 +453,8 @@ draw_geometry :: (cmd: VkCommandBuffer, s: *Device) {
 	viewport: VkViewport;
 	viewport.x = 0;
 	viewport.y = 0;
-	viewport.width = xx s.drawExtent.width;
-	viewport.height = xx s.drawExtent.height;
+	viewport.width = xx dev.drawExtent.width;
+	viewport.height = xx dev.drawExtent.height;
 	viewport.minDepth = 0.;
 	viewport.maxDepth = 1.;
 
@@ -459,14 +463,14 @@ draw_geometry :: (cmd: VkCommandBuffer, s: *Device) {
 	scissor: VkRect2D;
 	scissor.offset.x = 0;
 	scissor.offset.y = 0;
-	scissor.extent.width = s.drawExtent.width;
-	scissor.extent.height = s.drawExtent.height;
+	scissor.extent.width = dev.drawExtent.width;
+	scissor.extent.height = dev.drawExtent.height;
 
 	vkCmdSetScissor(cmd, 0, 1, *scissor);
 
 	// draw mesh cube
-	vkCmdBindPipeline(cmd, .GRAPHICS, s.meshPipeline.platformHandle);
-	vkCmdBindDescriptorSets(cmd, .GRAPHICS, s.meshPipeline.pipelineLayout, 0, 1, *s.cubeMaterialBindGroup.platformHandle, 0, null);
+	vkCmdBindPipeline(cmd, .GRAPHICS, dev.meshPipeline.platformHandle);
+	vkCmdBindDescriptorSets(cmd, .GRAPHICS, dev.meshPipeline.pipelineLayout, 0, 1, *dev.cubeMaterialBindGroup.platformHandle, 0, null);
 
 	projection := make_projection_matrix(60.0 * PI / 180.0, cast(float)WIDTH/cast(float)HEIGHT, 1000.0, 0.01, 0.0, 0.0, true);
 	projection._11 *= -1; // @todo eh?
@@ -479,10 +483,10 @@ draw_geometry :: (cmd: VkCommandBuffer, s: *Device) {
 	// beware, jai matrixes are row-major (designed for hlsl)
 	pushConstants: GpuDrawPushConstants;
 	pushConstants.worldMatrix = transpose(projection * view * model);
-	pushConstants.vertexBuffer = s.cubeMesh.deviceAddress;
+	pushConstants.vertexBuffer = dev.cubeMesh.deviceAddress;
 
-	vkCmdPushConstants(cmd, s.meshPipeline.pipelineLayout, .VERTEX_BIT, 0, size_of(GpuDrawPushConstants), *pushConstants);
-	vkCmdBindIndexBuffer(cmd, s.cubeMesh.indexBuffer.buffer, 0, .UINT32);
+	vkCmdPushConstants(cmd, dev.meshPipeline.pipelineLayout, .VERTEX_BIT, 0, size_of(GpuDrawPushConstants), *pushConstants);
+	vkCmdBindIndexBuffer(cmd, dev.cubeMesh.indexBuffer.buffer, 0, .UINT32);
 
 	vkCmdDrawIndexed(cmd, 36, 1, 0, 0, 0);
 

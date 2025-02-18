@@ -1,7 +1,7 @@
 
 CommandBuffer :: struct {
 	inUse: bool;
-	device: *Device;
+	dev: *Device;
 
 	// vulkan specific stuff
 	platformHandle: VkCommandBuffer;
@@ -13,21 +13,21 @@ CommandBuffer :: struct {
 	swapchainIndex: u32;
 }
 
-wait_and_acquire_swapchain_texture :: (cmdBuf: *CommandBuffer) -> Texture {
+wait_and_acquire_swapchain_texture :: (cmd: *CommandBuffer) -> Texture {
 	// waitForFences on the current frame render fence (from the window)
 	ONE_SECOND_IN_NS :: 1000000000;
 	// wait for the fence for this swapchain (was signalled in a previous submit)
-	frameIndex := cmdBuf.device.frameNumber % cmdBuf.device.nInFlightFrames;
+	frameIndex := cmd.dev.frameNumber % cmd.dev.nInFlightFrames;
 
-	if cmdBuf.device.inFlightFences[frameIndex] != null {
-		vkWaitForFences(cmdBuf.device.device, 1, cmdBuf.device.inFlightFences[frameIndex], VK_TRUE, ONE_SECOND_IN_NS);
-		vkResetFences(cmdBuf.device.device, 1, cmdBuf.device.inFlightFences[frameIndex]);
+	if cmd.dev.inFlightFences[frameIndex] != null {
+		vkWaitForFences(cmd.dev.vkDevice, 1, cmd.dev.inFlightFences[frameIndex], VK_TRUE, ONE_SECOND_IN_NS);
+		vkResetFences(cmd.dev.vkDevice, 1, cmd.dev.inFlightFences[frameIndex]);
 
 		// unsure if this is really the best way to do this
 		// we can't mark the command buffer as not in use right after submit cause submit may take some time
 		// it must be after the fence has been waited on
-		for * cmdBuf.device.commandBuffers {
-			if it.inFlightFence == <<cmdBuf.device.inFlightFences[frameIndex] {
+		for * cmd.dev.commandBuffers {
+			if it.inFlightFence == <<cmd.dev.inFlightFences[frameIndex] {
 				it.inUse = false;
 				it.forPresent = false;
 			}
@@ -35,47 +35,47 @@ wait_and_acquire_swapchain_texture :: (cmdBuf: *CommandBuffer) -> Texture {
 	}
 
 	vkAcquireNextImageKHR(
-		cmdBuf.device.device, 
-		cmdBuf.device.swapchain, 
+		cmd.dev.vkDevice, 
+		cmd.dev.swapchain, 
 		ONE_SECOND_IN_NS, 
-		cmdBuf.device.swapchainSemaphores[frameIndex], 
+		cmd.dev.swapchainSemaphores[frameIndex], 
 		null, 
-		*cmdBuf.swapchainIndex
+		*cmd.swapchainIndex
 	);
 
-	cmdBuf.forPresent = true;
+	cmd.forPresent = true;
 
-	cmdBuf.waitSemaphore = *cmdBuf.device.swapchainSemaphores[frameIndex];
-	cmdBuf.signalSemaphore = *cmdBuf.device.renderSemaphores[frameIndex];
+	cmd.waitSemaphore = *cmd.dev.swapchainSemaphores[frameIndex];
+	cmd.signalSemaphore = *cmd.dev.renderSemaphores[frameIndex];
 
 	swapchainTexture: Texture = .{
-		platformHandle = cmdBuf.device.swapchainImages[frameIndex],
-		imageViewHandle = cmdBuf.device.swapchainImageViews[frameIndex],
+		platformHandle = cmd.dev.swapchainImages[frameIndex],
+		imageViewHandle = cmd.dev.swapchainImageViews[frameIndex],
 		size = .{
-			width = xx cmdBuf.device.swapchainExtent.width,
-			height = xx cmdBuf.device.swapchainExtent.height,
+			width = xx cmd.dev.swapchainExtent.width,
+			height = xx cmd.dev.swapchainExtent.height,
 			depth = 1,
 		},
 		// @todo: fix
-		// format = cmdBuf.device.swapchainImageFormat,
+		// format = cmd.dev.swapchainImageFormat,
 	};
 	return swapchainTexture;
 }
 
-submit :: (cmdBuf: *CommandBuffer) {
-	vkEndCommandBuffer(cmdBuf.platformHandle);
+submit :: (cmd: *CommandBuffer) {
+	vkEndCommandBuffer(cmd.platformHandle);
 
-	if cmdBuf.forPresent {
+	if cmd.forPresent {
 		cmdInfo: VkCommandBufferSubmitInfo;
-		cmdInfo.commandBuffer = cmdBuf.platformHandle;
+		cmdInfo.commandBuffer = cmd.platformHandle;
 
 		waitInfo: VkSemaphoreSubmitInfo;
-		waitInfo.semaphore = <<cmdBuf.waitSemaphore;
+		waitInfo.semaphore = <<cmd.waitSemaphore;
 		waitInfo.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR;
 		waitInfo.value = 1;
 
 		signalInfo: VkSemaphoreSubmitInfo;
-		signalInfo.semaphore = <<cmdBuf.signalSemaphore;
+		signalInfo.semaphore = <<cmd.signalSemaphore;
 		signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
 		signalInfo.value = 1;
 
@@ -87,25 +87,25 @@ submit :: (cmdBuf: *CommandBuffer) {
 		submitInfo.commandBufferInfoCount = 1;
 		submitInfo.pCommandBufferInfos = *cmdInfo;
 
-		result := vkQueueSubmit2(cmdBuf.device.graphicsQueue, 1, *submitInfo, cmdBuf.inFlightFence);
+		result := vkQueueSubmit2(cmd.dev.graphicsQueue, 1, *submitInfo, cmd.inFlightFence);
 		assert(result == .SUCCESS, "Failed to submit immediate cmd buffer");
 
 		presentInfo := VkPresentInfoKHR.{
-			pSwapchains = *cmdBuf.device.swapchain,
+			pSwapchains = *cmd.dev.swapchain,
 			swapchainCount = 1,
-			pWaitSemaphores = cmdBuf.signalSemaphore,
+			pWaitSemaphores = cmd.signalSemaphore,
 			waitSemaphoreCount = 1,
-			pImageIndices = *cmdBuf.swapchainIndex
+			pImageIndices = *cmd.swapchainIndex
 		};
-		vkQueuePresentKHR(cmdBuf.device.presentQueue, *presentInfo);
+		vkQueuePresentKHR(cmd.dev.presentQueue, *presentInfo);
 
-		frameIndex := cmdBuf.device.frameNumber % cmdBuf.device.nInFlightFrames;
-		cmdBuf.device.inFlightFences[frameIndex] = *cmdBuf.inFlightFence;
-		cmdBuf.device.frameNumber += 1;
+		frameIndex := cmd.dev.frameNumber % cmd.dev.nInFlightFrames;
+		cmd.dev.inFlightFences[frameIndex] = *cmd.inFlightFence;
+		cmd.dev.frameNumber += 1;
 	}
 	else {
 		cmdInfo: VkCommandBufferSubmitInfo;
-		cmdInfo.commandBuffer = cmdBuf.platformHandle;
+		cmdInfo.commandBuffer = cmd.platformHandle;
 
 		submitInfo: VkSubmitInfo2;
 		submitInfo.waitSemaphoreInfoCount = 0;
@@ -113,20 +113,19 @@ submit :: (cmdBuf: *CommandBuffer) {
 		submitInfo.commandBufferInfoCount = 1;
 		submitInfo.pCommandBufferInfos = *cmdInfo;
 
-		result := vkQueueSubmit2(cmdBuf.device.graphicsQueue, 1, *submitInfo, cmdBuf.inFlightFence);
+		result := vkQueueSubmit2(cmd.dev.graphicsQueue, 1, *submitInfo, cmd.inFlightFence);
 		assert(result == .SUCCESS, "Failed to submit immediate cmd buffer");
 
-		result = vkWaitForFences(cmdBuf.device.device, 1, *cmdBuf.inFlightFence, VK_TRUE, 999999999999999999);
+		result = vkWaitForFences(cmd.dev.vkDevice, 1, *cmd.inFlightFence, VK_TRUE, 999999999999999999);
 		assert(result == .SUCCESS, "Wait For fences failed");
-		result = vkResetFences(cmdBuf.device.device, 1, *cmdBuf.inFlightFence);
+		result = vkResetFences(cmd.dev.vkDevice, 1, *cmd.inFlightFence);
 		assert(result == .SUCCESS, "Could not reset fence");
 
-		cmdBuf.inUse = false;
-		cmdBuf.forPresent = false;
+		cmd.inUse = false;
+		cmd.forPresent = false;
 	}
 }
 
-submit_command_buffer_and_acquire_fence :: (s: *Device) {
-	// same as above but..
-	// return the fence that was used in the queue submit function
+begin_render_pass :: (cmd: *CommandBuffer) {
+
 }
