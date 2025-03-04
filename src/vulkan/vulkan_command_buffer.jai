@@ -126,6 +126,52 @@ submit :: (cmd: *CommandBuffer) {
 	}
 }
 
-begin_render_pass :: (cmd: *CommandBuffer) {
+begin_rendering :: (cmd: *CommandBuffer, info: RenderingInfo) {
+	// 8 max attachments, seems fine?
+	colorAttachments: [8]VkRenderingAttachmentInfo;
+	for * info.colorAttachments {
+		colorAttachments[it_index].imageView = it.image.imageViewHandle;
+		colorAttachments[it_index].imageLayout = .COLOR_ATTACHMENT_OPTIMAL; // assumed, maybe error?
+		colorAttachments[it_index].loadOp = to_vk(it.loadOp);
+		colorAttachments[it_index].storeOp = to_vk(it.storeOp);
+		colorAttachments[it_index].clearValue.color = .{_float32 = .[it.clear.color.x, it.clear.color.y, it.clear.color.z, it.clear.color.w]};
+	}
 
+	depthAttachment: VkRenderingAttachmentInfo;
+	depthAttachment.imageView = info.depthAttachment.image.imageViewHandle;
+	depthAttachment.imageLayout = .DEPTH_ATTACHMENT_OPTIMAL;
+	depthAttachment.loadOp = to_vk(info.depthAttachment.loadOp);
+	depthAttachment.storeOp = to_vk(info.depthAttachment.storeOp);
+	depthAttachment.clearValue.depthStencil.depth = info.depthAttachment.clear.depth;
+
+	renderingInfo: VkRenderingInfo;
+	renderingInfo.renderArea.offset = .{info.renderArea.x, info.renderArea.y};
+	renderingInfo.renderArea.extent = .{xx info.renderArea.width, xx info.renderArea.height};
+	renderingInfo.layerCount = 1;
+	renderingInfo.colorAttachmentCount = xx info.colorAttachments.count;
+	renderingInfo.pColorAttachments = colorAttachments.data;
+	renderingInfo.pDepthAttachment = *depthAttachment;
+
+	vkCmdBeginRendering(cmd.platformHandle, *renderingInfo);
+}
+
+end_rendering :: (cmd: *CommandBuffer) {
+	vkCmdEndRendering(cmd.platformHandle);
+}
+
+to_vk :: (loadop: RenderAttachmentLoadOp) -> VkAttachmentLoadOp {
+	if loadop == {
+		case .LOAD; return .LOAD; 
+		case .CLEAR; return .CLEAR; 
+		case .DONTCARE; return .DONT_CARE; 
+		case; return .DONT_CARE;
+	}
+}
+
+to_vk :: (storeop: RenderAttachmentStoreOp) -> VkAttachmentStoreOp {
+	if storeop == {
+		case .STORE; return .STORE; 
+		case .DONTCARE; return .DONT_CARE; 
+		case; return .DONT_CARE;
+	}
 }

@@ -392,7 +392,7 @@ draw :: (dev: *Device) {
 	transition_image(cmd.platformHandle, dev.drawImage.platformHandle, .GENERAL, .COLOR_ATTACHMENT_OPTIMAL);
 	transition_image(cmd.platformHandle, dev.depthImage.platformHandle, .UNDEFINED, .DEPTH_ATTACHMENT_OPTIMAL);
 
-	draw_geometry(cmd.platformHandle, dev);
+	draw_geometry(cmd, dev);
 
 	// blit our frame onto the swapchain
 	// blit barrier (target goes to write, source goes to read optimal)
@@ -405,21 +405,14 @@ draw :: (dev: *Device) {
 	transition_image(cmd.platformHandle, swapchainTexture.platformHandle, .TRANSFER_DST_OPTIMAL, .COLOR_ATTACHMENT_OPTIMAL);
 
 	// draw imgui render lists
-	attachmentInfo: VkRenderingAttachmentInfo;
-	attachmentInfo.imageView = swapchainTexture.imageViewHandle;
-	attachmentInfo.imageLayout = .COLOR_ATTACHMENT_OPTIMAL;
-	attachmentInfo.loadOp = .LOAD;
-	attachmentInfo.storeOp = .STORE;
+	begin_rendering(cmd, .{
+		renderArea = .{0, 0, xx dev.swapchainExtent.width, xx dev.swapchainExtent.height},
+		colorAttachments = .[ .{image = swapchainTexture, loadOp=.LOAD, storeOp=.STORE} ]
+	});
 
-	renderingInfo: VkRenderingInfo;
-	renderingInfo.renderArea.extent = dev.swapchainExtent;
-	renderingInfo.layerCount = 1;
-	renderingInfo.colorAttachmentCount = 1;
-	renderingInfo.pColorAttachments = *attachmentInfo;
-
-	vkCmdBeginRendering(cmd.platformHandle, *renderingInfo);
 	ImGui_ImplVulkan_RenderDrawData(ImGui.GetDrawData(), cmd.platformHandle);
-	vkCmdEndRendering(cmd.platformHandle);
+
+	end_rendering(cmd);
 
 	// barrier swapchain goes to present
 	transition_image(cmd.platformHandle, swapchainTexture.platformHandle, .COLOR_ATTACHMENT_OPTIMAL, .PRESENT_SRC_KHR);
@@ -427,27 +420,13 @@ draw :: (dev: *Device) {
 	submit(cmd);
 }
 
-draw_geometry :: (cmd: VkCommandBuffer, dev: *Device) {
-	colorAttachment: VkRenderingAttachmentInfo;
-	colorAttachment.imageView = dev.drawImage.imageViewHandle;
-	colorAttachment.imageLayout = .COLOR_ATTACHMENT_OPTIMAL;
-	colorAttachment.loadOp = .LOAD;
-	colorAttachment.storeOp = .STORE;
-	depthAttachment: VkRenderingAttachmentInfo;
-	depthAttachment.imageView = dev.depthImage.imageViewHandle;
-	depthAttachment.imageLayout = .DEPTH_ATTACHMENT_OPTIMAL;
-	depthAttachment.loadOp = .CLEAR;
-	depthAttachment.storeOp = .STORE;
-	depthAttachment.clearValue.depthStencil.depth = 0;
+draw_geometry :: (cmd: *CommandBuffer, dev: *Device) {
 
-	renderingInfo: VkRenderingInfo;
-	renderingInfo.renderArea.extent = dev.drawExtent;
-	renderingInfo.layerCount = 1;
-	renderingInfo.colorAttachmentCount = 1;
-	renderingInfo.pColorAttachments = *colorAttachment;
-	renderingInfo.pDepthAttachment = *depthAttachment;
-
-	vkCmdBeginRendering(cmd, *renderingInfo);
+	begin_rendering(cmd, .{
+		renderArea = .{0, 0, xx dev.drawExtent.width, xx dev.drawExtent.height},
+		colorAttachments = .[ .{image = dev.drawImage, loadOp=.LOAD, storeOp=.STORE} ],
+		depthAttachment = .{image = dev.depthImage, loadOp=.CLEAR, storeOp=.STORE, clear.depth = 0.0}
+	});
 
 
 	viewport: VkViewport;
@@ -458,7 +437,7 @@ draw_geometry :: (cmd: VkCommandBuffer, dev: *Device) {
 	viewport.minDepth = 0.;
 	viewport.maxDepth = 1.;
 
-	vkCmdSetViewport(cmd, 0, 1, *viewport);
+	vkCmdSetViewport(cmd.platformHandle, 0, 1, *viewport);
 
 	scissor: VkRect2D;
 	scissor.offset.x = 0;
@@ -466,11 +445,11 @@ draw_geometry :: (cmd: VkCommandBuffer, dev: *Device) {
 	scissor.extent.width = dev.drawExtent.width;
 	scissor.extent.height = dev.drawExtent.height;
 
-	vkCmdSetScissor(cmd, 0, 1, *scissor);
+	vkCmdSetScissor(cmd.platformHandle, 0, 1, *scissor);
 
 	// draw mesh cube
-	vkCmdBindPipeline(cmd, .GRAPHICS, dev.meshPipeline.platformHandle);
-	vkCmdBindDescriptorSets(cmd, .GRAPHICS, dev.meshPipeline.pipelineLayout, 0, 1, *dev.cubeMaterialBindGroup.platformHandle, 0, null);
+	vkCmdBindPipeline(cmd.platformHandle, .GRAPHICS, dev.meshPipeline.platformHandle);
+	vkCmdBindDescriptorSets(cmd.platformHandle, .GRAPHICS, dev.meshPipeline.pipelineLayout, 0, 1, *dev.cubeMaterialBindGroup.platformHandle, 0, null);
 
 	projection := make_projection_matrix(60.0 * PI / 180.0, cast(float)WIDTH/cast(float)HEIGHT, 1000.0, 0.01, 0.0, 0.0, true);
 	projection._11 *= -1; // @todo eh?
@@ -485,12 +464,12 @@ draw_geometry :: (cmd: VkCommandBuffer, dev: *Device) {
 	pushConstants.worldMatrix = transpose(projection * view * model);
 	pushConstants.vertexBuffer = dev.cubeMesh.deviceAddress;
 
-	vkCmdPushConstants(cmd, dev.meshPipeline.pipelineLayout, .VERTEX_BIT, 0, size_of(GpuDrawPushConstants), *pushConstants);
-	vkCmdBindIndexBuffer(cmd, dev.cubeMesh.indexBuffer.buffer, 0, .UINT32);
+	vkCmdPushConstants(cmd.platformHandle, dev.meshPipeline.pipelineLayout, .VERTEX_BIT, 0, size_of(GpuDrawPushConstants), *pushConstants);
+	vkCmdBindIndexBuffer(cmd.platformHandle, dev.cubeMesh.indexBuffer.buffer, 0, .UINT32);
 
-	vkCmdDrawIndexed(cmd, 36, 1, 0, 0, 0);
+	vkCmdDrawIndexed(cmd.platformHandle, 36, 1, 0, 0, 0);
 
-	vkCmdEndRendering(cmd);
+	end_rendering(cmd);
 }
 
 logger :: (message: string, data: *void, info: Log_Info) {
