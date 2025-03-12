@@ -131,28 +131,6 @@ rhi_device_acquire_command_buffer :: (using dev: *Device) -> *CommandBuffer {
 	return null;
 }
 
-// @todo: this should be a part of the command buffer functions
-transition_image :: (cmd: VkCommandBuffer, image: VkImage, current_layout: VkImageLayout, new_layout: VkImageLayout) {
-	image_barrier: VkImageMemoryBarrier2;
-    image_barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    image_barrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT ;
-    image_barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    image_barrier.dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT  | VK_ACCESS_2_MEMORY_READ_BIT;
-    image_barrier.oldLayout = current_layout;
-    image_barrier.newLayout = new_layout;
-
-    aspect_mask: VkImageAspectFlags = ifx new_layout == .DEPTH_ATTACHMENT_OPTIMAL then .DEPTH_BIT else .COLOR_BIT;
-    image_barrier.subresourceRange = image_subresource_range(aspect_mask);
-    image_barrier.image = image;
-
-    dep_info: VkDependencyInfo;
-    dep_info.sType = .DEPENDENCY_INFO;
-    dep_info.imageMemoryBarrierCount = 1;
-    dep_info.pImageMemoryBarriers = *image_barrier;
-    
-    vkCmdPipelineBarrier2(cmd, *dep_info);
-}
-
 rhi_device_create_bind_group_layout :: (using dev: *Device, opts: BindGroupLayoutDesc) -> BindGroupLayout {
 	info: VkDescriptorSetLayoutCreateInfo;
 	info.pNext = null;
@@ -421,7 +399,7 @@ rhi_device_create_texture :: (using dev: *Device, opts: TextureDesc) -> Texture 
 	imageInfo.arrayLayers = 1;
 	imageInfo.samples = .VK_SAMPLE_COUNT_1_BIT;
 	imageInfo.tiling = .VK_IMAGE_TILING_OPTIMAL;
-	imageInfo.usage = texture_usage_mask_to_vk(opts.usage);
+	imageInfo.usage = to_vk(opts.usage, opts.format);
 	if opts.data {
 		imageInfo.usage |= .TRANSFER_DST_BIT | .TRANSFER_SRC_BIT;
 	}
@@ -452,7 +430,8 @@ rhi_device_create_texture :: (using dev: *Device, opts: TextureDesc) -> Texture 
 
 		cmd := rhi_device_acquire_command_buffer(dev);
 
-		transition_image(cmd.platformHandle, image.platformHandle, .UNDEFINED, .TRANSFER_DST_OPTIMAL); 
+		barrier(cmd, .[.{image, .NONE, .COPY_DST}]);
+
 		copyRegion: VkBufferImageCopy;
 		copyRegion.bufferOffset = 0;
 		copyRegion.bufferRowLength = 0;
@@ -463,7 +442,9 @@ rhi_device_create_texture :: (using dev: *Device, opts: TextureDesc) -> Texture 
 		copyRegion.imageSubresource.layerCount = 1;
 		copyRegion.imageExtent = texture_size_to_vk(opts.size);
 		vkCmdCopyBufferToImage(cmd.platformHandle, uploadBuffer.buffer, image.platformHandle, .TRANSFER_DST_OPTIMAL, 1, *copyRegion);
-		transition_image(cmd.platformHandle, image.platformHandle, .TRANSFER_DST_OPTIMAL, .SHADER_READ_ONLY_OPTIMAL); 
+
+		// @todo: can we be more precise than read shader all?
+		barrier(cmd, .[.{image, .COPY_DST, .READ_SHADER}]);
 
 		submit(cmd);
 		rhi_device_destroy_buffer(dev, *uploadBuffer);
@@ -651,14 +632,21 @@ binding_type_to_vk :: (bindingType: BindingType) -> VkDescriptorType {
 	}
 }
 
-texture_usage_mask_to_vk :: (textureUsageMask: TextureUsageFlags) -> VkImageUsageFlags {
+to_vk :: (textureUsageMask: TextureUsage, textureFormat: PixelFormat) -> VkImageUsageFlags {
 	vkMask: VkImageUsageFlags;
-	if textureUsageMask & .COPY_SRC then vkMask |= .TRANSFER_SRC_BIT;
+	if textureUsageMask & .READ_SHADER then vkMask |= .SAMPLED_BIT;
+	if textureUsageMask & .READ_WRITE_SHADER then vkMask |= .STORAGE_BIT;
 	if textureUsageMask & .COPY_DST then vkMask |= .TRANSFER_DST_BIT;
-	if textureUsageMask & .READ_ONLY then vkMask |= .SAMPLED_BIT;
-	if textureUsageMask & .READ_AND_WRITE then vkMask |= .STORAGE_BIT;
-	if textureUsageMask & .COLOR_TARGET then vkMask |= .COLOR_ATTACHMENT_BIT;
-	if textureUsageMask & .DEPTH_TARGET then vkMask |= .DEPTH_STENCIL_ATTACHMENT_BIT;
+	if textureUsageMask & .COPY_SRC then vkMask |= .TRANSFER_SRC_BIT;
+
+	if textureUsageMask & (.READ_RENDER_TARGET | .WRITE_RENDER_TARGET) {
+		if textureFormat == .DEPTH {
+			vkMask |= .DEPTH_STENCIL_ATTACHMENT_BIT;
+		}
+		else {
+			vkMask |= .COLOR_ATTACHMENT_BIT;
+		}
+	}
 	return vkMask;
 }
 
@@ -936,13 +924,13 @@ init_swapchain :: (using dev: *Device) {
 	drawImage = rhi_device_create_texture(dev, .{
 		format = .RGBA16F,
 		size = .{width = WIDTH, height = HEIGHT, depth=1},
-		usage = .COPY_SRC | .COPY_DST | .READ_AND_WRITE | .COLOR_TARGET,
+		usage = .COPY_ALL | .READ_WRITE_SHADER | .WRITE_RENDER_TARGET,
 	});
 
 	depthImage = rhi_device_create_texture(dev, .{
 		format = .DEPTH,
 		size = drawImage.size,
-		usage = .DEPTH_TARGET
+		usage = .READ_WRITE_RENDER_TARGET
 	});
 }
 
@@ -1360,15 +1348,6 @@ choose_swapchain_extent :: (capabilities: VkSurfaceCapabilitiesKHR, window: *SDL
 	);
 	
 	return extent;
-}
-
-image_subresource_range :: (aspect_mask: VkImageAspectFlags) -> VkImageSubresourceRange
-{
-	sub_image: VkImageSubresourceRange;
-    sub_image.aspectMask = aspect_mask;
-    sub_image.levelCount = VK_REMAINING_MIP_LEVELS;
-    sub_image.layerCount = VK_REMAINING_ARRAY_LAYERS;
-    return sub_image;
 }
 
 // descriptor pool management

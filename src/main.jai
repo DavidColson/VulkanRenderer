@@ -166,7 +166,7 @@ init_mesh_pipeline :: (using dev: *Device) {
 		crateTexture = rhi_device_create_texture(dev, .{
 			format = .RGBA8,
 			size = .{ width = x, height = y, depth=1},
-			usage = .READ_ONLY,
+			usage = .READ_SHADER,
 			data = imageData
 		});
 	}
@@ -368,7 +368,7 @@ draw :: (dev: *Device) {
 
 
 	// barrier for starting compute pass (draw image goes to write)
-	transition_image(cmd.platformHandle, dev.drawImage.platformHandle, .UNDEFINED, .GENERAL);
+	barrier(cmd, .[.{dev.drawImage, .NONE, .READ_WRITE_COMPUTE}]);
 
 	// draw background with compute
 	////////////////////////////////
@@ -388,21 +388,20 @@ draw :: (dev: *Device) {
 	vkCmdPushConstants(cmd.platformHandle, dev.computePipelineLayout, .COMPUTE_BIT, 0, size_of(ComputePushConstants), *dev.pc);
 	vkCmdDispatch(cmd.platformHandle, xx ceil(dev.drawExtent.width / 16.0), xx ceil(dev.drawExtent.width / 16.0), 1);
 
-	// rendering pass barrier (targets go to write)
-	transition_image(cmd.platformHandle, dev.drawImage.platformHandle, .GENERAL, .COLOR_ATTACHMENT_OPTIMAL);
-	transition_image(cmd.platformHandle, dev.depthImage.platformHandle, .UNDEFINED, .DEPTH_ATTACHMENT_OPTIMAL);
-
+	barrier(cmd, .[
+		.{dev.drawImage, .READ_WRITE_COMPUTE, .WRITE_RENDER_TARGET},
+		.{dev.depthImage, .NONE, .WRITE_RENDER_TARGET}
+	]);
 	draw_geometry(cmd, dev);
 
 	// blit our frame onto the swapchain
-	// blit barrier (target goes to write, source goes to read optimal)
-	transition_image(cmd.platformHandle, dev.drawImage.platformHandle, .COLOR_ATTACHMENT_OPTIMAL, .TRANSFER_SRC_OPTIMAL);
-	transition_image(cmd.platformHandle, swapchainTexture.platformHandle, .UNDEFINED, .TRANSFER_DST_OPTIMAL);
-
+	barrier(cmd, .[
+		.{dev.drawImage, .WRITE_RENDER_TARGET, .COPY_SRC},
+		.{swapchainTexture, .NONE, .COPY_DST}
+	]);
 	copy_image_to_image(cmd.platformHandle, dev.drawImage.platformHandle, swapchainTexture.platformHandle, dev.drawExtent, dev.swapchainExtent);
 
-	// new render pass (write target barrier)
-	transition_image(cmd.platformHandle, swapchainTexture.platformHandle, .TRANSFER_DST_OPTIMAL, .COLOR_ATTACHMENT_OPTIMAL);
+	barrier(cmd, .[.{swapchainTexture, .COPY_DST, .WRITE_RENDER_TARGET}]);
 
 	// draw imgui render lists
 	begin_rendering(cmd, .{
@@ -414,8 +413,7 @@ draw :: (dev: *Device) {
 
 	end_rendering(cmd);
 
-	// barrier swapchain goes to present
-	transition_image(cmd.platformHandle, swapchainTexture.platformHandle, .COLOR_ATTACHMENT_OPTIMAL, .PRESENT_SRC_KHR);
+	barrier(cmd, .[.{swapchainTexture, .WRITE_RENDER_TARGET, .PRESENT}]);
 
 	submit(cmd);
 }

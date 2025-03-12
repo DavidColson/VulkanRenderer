@@ -39,3 +39,9 @@ RenderingInfo :: struct {
 	colorAttachments: []RenderAttachment;
 	depthAttachment: RenderAttachment;
 }
+
+TextureBarrier :: struct {
+	texture: Texture;
+	prevUsage: TextureUsage;
+	nextUsage: TextureUsage;
+}

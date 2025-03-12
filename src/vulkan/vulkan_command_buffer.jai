@@ -159,6 +159,41 @@ end_rendering :: (cmd: *CommandBuffer) {
 	vkCmdEndRendering(cmd.platformHandle);
 }
 
+barrier :: (cmd: *CommandBuffer, textureBarriers: []TextureBarrier) {
+	imageBarriers: [..]VkImageMemoryBarrier2;
+	imageBarriers.allocator = temp;
+
+	for textureBarriers {
+		imageBarrier: VkImageMemoryBarrier2;
+
+		imageBarrier.srcStageMask = 0;
+		imageBarrier.srcAccessMask = 0 ;
+		imageBarrier.dstStageMask = 0;
+		imageBarrier.dstAccessMask = 0;
+		imageBarrier.oldLayout = .UNDEFINED;
+		imageBarrier.newLayout = .UNDEFINED;
+		imageBarrier.image = it.texture.platformHandle;
+
+		texture_usage_to_barrier(it.prevUsage, it.texture.format, *imageBarrier.srcStageMask, *imageBarrier.srcAccessMask, *imageBarrier.oldLayout);
+		texture_usage_to_barrier(it.nextUsage, it.texture.format, *imageBarrier.dstStageMask, *imageBarrier.dstAccessMask, *imageBarrier.newLayout);
+
+		subresourceRange: VkImageSubresourceRange;
+		subresourceRange.aspectMask = ifx imageBarrier.newLayout == .DEPTH_STENCIL_ATTACHMENT_OPTIMAL then .DEPTH_BIT else .COLOR_BIT;;
+		subresourceRange.levelCount = 1;
+		subresourceRange.layerCount = 1;
+		imageBarrier.subresourceRange = subresourceRange;
+
+		array_add(*imageBarriers, imageBarrier);
+	}
+
+    dep_info: VkDependencyInfo;
+    dep_info.sType = .DEPENDENCY_INFO;
+    dep_info.imageMemoryBarrierCount = xx imageBarriers.count;
+    dep_info.pImageMemoryBarriers = imageBarriers.data;
+    
+    vkCmdPipelineBarrier2(cmd.platformHandle, *dep_info);
+}
+
 to_vk :: (loadop: RenderAttachmentLoadOp) -> VkAttachmentLoadOp {
 	if loadop == {
 		case .LOAD; return .LOAD; 
@@ -175,3 +210,78 @@ to_vk :: (storeop: RenderAttachmentStoreOp) -> VkAttachmentStoreOp {
 		case; return .DONT_CARE;
 	}
 }
+
+#scope_file
+
+texture_usage_to_barrier :: (usage: TextureUsage, textureFormat: PixelFormat, stage: *VkPipelineStageFlags2, access: *VkAccessFlags2, layout: *VkImageLayout) {
+	if usage & .READ_GEOMETRY {
+		stage |= VkPipelineStageFlagBits.VERTEX_SHADER_BIT | .GEOMETRY_SHADER_BIT | .TESSELLATION_CONTROL_SHADER_BIT | .TESSELLATION_EVALUATION_SHADER_BIT;
+		access |= VkAccessFlagBits.SHADER_READ_BIT;
+		<<layout = .SHADER_READ_ONLY_OPTIMAL;
+	}
+	if usage & .READ_WRITE_GEOMETRY {
+		stage |= VkPipelineStageFlagBits.VERTEX_SHADER_BIT | .GEOMETRY_SHADER_BIT | .TESSELLATION_CONTROL_SHADER_BIT | .TESSELLATION_EVALUATION_SHADER_BIT;
+		access |= VkAccessFlagBits.SHADER_WRITE_BIT;
+		<<layout = .GENERAL;
+	}
+	if usage & .READ_PIXEL {
+		stage |= VkPipelineStageFlagBits.FRAGMENT_SHADER_BIT;
+		access |= VkAccessFlagBits.SHADER_READ_BIT;
+		<<layout = .SHADER_READ_ONLY_OPTIMAL;
+	}
+	if usage & .READ_WRITE_PIXEL {
+		stage |= VkPipelineStageFlagBits.FRAGMENT_SHADER_BIT;
+		access |= VkAccessFlagBits.SHADER_WRITE_BIT;
+		<<layout = .GENERAL;
+	}
+	if usage & .READ_COMPUTE {
+		stage |= VkPipelineStageFlagBits.COMPUTE_SHADER_BIT;
+		access |= VkAccessFlagBits.SHADER_READ_BIT;
+		<<layout = .SHADER_READ_ONLY_OPTIMAL;
+	}
+	if usage & .READ_WRITE_COMPUTE {
+		stage |= VkPipelineStageFlagBits.COMPUTE_SHADER_BIT;
+		access |= VkAccessFlagBits.SHADER_WRITE_BIT;
+		<<layout = .GENERAL;
+	}
+	if usage & .READ_RENDER_TARGET {
+		if textureFormat == .DEPTH {
+			stage |= VkPipelineStageFlagBits.EARLY_FRAGMENT_TESTS_BIT | .LATE_FRAGMENT_TESTS_BIT;
+			access |= VkAccessFlagBits.DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+			<<layout = .DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+		}
+		else {
+			stage |= VkPipelineStageFlagBits.COLOR_ATTACHMENT_OUTPUT_BIT;
+			access |= VkAccessFlagBits.COLOR_ATTACHMENT_READ_BIT;
+			<<layout = .COLOR_ATTACHMENT_OPTIMAL;
+		}
+	}
+	if usage & .WRITE_RENDER_TARGET {
+		if textureFormat == .DEPTH {
+			stage |= VkPipelineStageFlagBits.EARLY_FRAGMENT_TESTS_BIT | .LATE_FRAGMENT_TESTS_BIT;
+			access |= VkAccessFlagBits.DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+			<<layout = .DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+		}
+		else {
+			stage |= VkPipelineStageFlagBits.COLOR_ATTACHMENT_OUTPUT_BIT;
+			access |= VkAccessFlagBits.COLOR_ATTACHMENT_WRITE_BIT;
+			<<layout = .COLOR_ATTACHMENT_OPTIMAL;
+		}
+	}
+	if usage & .COPY_SRC {
+		stage |= VkPipelineStageFlagBits.TRANSFER_BIT;
+		access |= VkAccessFlagBits.TRANSFER_READ_BIT;
+		<<layout = .TRANSFER_SRC_OPTIMAL;
+	}
+	if usage & .COPY_DST {
+		stage |= VkPipelineStageFlagBits.TRANSFER_BIT;
+		access |= VkAccessFlagBits.TRANSFER_WRITE_BIT;
+		<<layout = .TRANSFER_DST_OPTIMAL;
+	}
+	if usage & .PRESENT {
+		stage |= VkPipelineStageFlagBits.BOTTOM_OF_PIPE_BIT;
+		access |= VkAccessFlagBits.MEMORY_READ_BIT;
+		<<layout = .PRESENT_SRC_KHR;
+	}
+}
+
