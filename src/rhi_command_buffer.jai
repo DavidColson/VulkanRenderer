@@ -22,6 +22,11 @@ RenderAttachmentStoreOp :: enum {
 	DONTCARE;
 }
 
+BindPoint :: enum {
+	GRAPHICS;
+	COMPUTE;
+}
+
 ClearValue :: union {
 	depth: float;
 	color: Vector4;

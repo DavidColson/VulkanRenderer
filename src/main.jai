@@ -446,8 +446,8 @@ draw_geometry :: (cmd: *CommandBuffer, dev: *Device) {
 	vkCmdSetScissor(cmd.platformHandle, 0, 1, *scissor);
 
 	// draw mesh cube
-	vkCmdBindPipeline(cmd.platformHandle, .GRAPHICS, dev.meshPipeline.platformHandle);
-	vkCmdBindDescriptorSets(cmd.platformHandle, .GRAPHICS, dev.meshPipeline.pipelineLayout, 0, 1, *dev.cubeMaterialBindGroup.platformHandle, 0, null);
+	set_pipeline(cmd, .GRAPHICS, dev.meshPipeline);
+	set_bind_group(cmd, .GRAPHICS, dev.cubeMaterialBindGroup);
 
 	projection := make_projection_matrix(60.0 * PI / 180.0, cast(float)WIDTH/cast(float)HEIGHT, 1000.0, 0.01, 0.0, 0.0, true);
 	projection._11 *= -1; // @todo eh?
@@ -461,9 +461,8 @@ draw_geometry :: (cmd: *CommandBuffer, dev: *Device) {
 	pushConstants: GpuDrawPushConstants;
 	pushConstants.worldMatrix = transpose(projection * view * model);
 	pushConstants.vertexBuffer = dev.cubeMesh.deviceAddress;
-
-	vkCmdPushConstants(cmd.platformHandle, dev.meshPipeline.pipelineLayout, .VERTEX_BIT, 0, size_of(GpuDrawPushConstants), *pushConstants);
-	vkCmdBindIndexBuffer(cmd.platformHandle, dev.cubeMesh.indexBuffer.buffer, 0, .UINT32);
+	set_push_constants(cmd, .VERTEX, 0, size_of(GpuDrawPushConstants), *pushConstants);
+	set_index_buffer(cmd, dev.cubeMesh.indexBuffer, 32);
 
 	vkCmdDrawIndexed(cmd.platformHandle, 36, 1, 0, 0, 0);
 

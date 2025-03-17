@@ -2,6 +2,7 @@
 CommandBuffer :: struct {
 	inUse: bool;
 	dev: *Device;
+	currentPipeline: Pipeline;
 
 	// vulkan specific stuff
 	platformHandle: VkCommandBuffer;
@@ -194,6 +195,31 @@ barrier :: (cmd: *CommandBuffer, textureBarriers: []TextureBarrier) {
     vkCmdPipelineBarrier2(cmd.platformHandle, *dep_info);
 }
 
+set_pipeline :: (cmd: *CommandBuffer, bindPoint: BindPoint, pipeline: Pipeline) {
+	cmd.currentPipeline = pipeline;
+	vkCmdBindPipeline(cmd.platformHandle, to_vk(bindPoint), pipeline.platformHandle);
+}
+
+set_bind_group :: (cmd: *CommandBuffer, bindPoint: BindPoint, bindGroup: BindGroup) {
+	vkCmdBindDescriptorSets(cmd.platformHandle, to_vk(bindPoint), cmd.currentPipeline.pipelineLayout, 0, 1, *bindGroup.platformHandle, 0, null);
+}
+
+set_index_buffer :: (cmd: *CommandBuffer, buffer: Buffer, elementSizeBytes: s32) {
+	if (elementSizeBytes == 32) {
+		vkCmdBindIndexBuffer(cmd.platformHandle, buffer.buffer, 0, .UINT32);
+	}
+	else if (elementSizeBytes == 16) {
+		vkCmdBindIndexBuffer(cmd.platformHandle, buffer.buffer, 0, .UINT16);
+	}
+	else {
+		assert(false, "Only support 16 or 32 bit index buffers");
+	}
+}
+
+set_push_constants :: (cmd: *CommandBuffer, stage: ShaderStage, offset: u32, size: u32, data: *void) {
+	vkCmdPushConstants(cmd.platformHandle, cmd.currentPipeline.pipelineLayout, shader_stage_to_vk(stage), offset, size, data);
+}
+
 to_vk :: (loadop: RenderAttachmentLoadOp) -> VkAttachmentLoadOp {
 	if loadop == {
 		case .LOAD; return .LOAD; 
@@ -208,6 +234,14 @@ to_vk :: (storeop: RenderAttachmentStoreOp) -> VkAttachmentStoreOp {
 		case .STORE; return .STORE; 
 		case .DONTCARE; return .DONT_CARE; 
 		case; return .DONT_CARE;
+	}
+}
+
+to_vk :: (bindpoint: BindPoint) -> VkPipelineBindPoint {
+	if bindpoint == {
+		case .GRAPHICS; return .GRAPHICS; 
+		case .COMPUTE; return .COMPUTE; 
+		case; return .GRAPHICS;
 	}
 }
 

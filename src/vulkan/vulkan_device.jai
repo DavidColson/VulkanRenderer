@@ -537,7 +537,6 @@ copy_image_to_image :: (cmd: VkCommandBuffer, source: VkImage, destination: VkIm
 	vkCmdBlitImage2(cmd, *blitInfo);
 }
 
-#scope_file
 
 // Type converters
 
@@ -675,6 +674,8 @@ memory_usage_to_vk :: (memoryUsage: MemoryUsageFlags) -> VmaMemoryUsage {
 		case; return .GPU_ONLY;
 	}
 }
+
+#scope_file
 
 // init code
 
