@@ -419,31 +419,23 @@ draw :: (dev: *Device) {
 }
 
 draw_geometry :: (cmd: *CommandBuffer, dev: *Device) {
-
 	begin_rendering(cmd, .{
 		renderArea = .{0, 0, xx dev.drawExtent.width, xx dev.drawExtent.height},
 		colorAttachments = .[ .{image = dev.drawImage, loadOp=.LOAD, storeOp=.STORE} ],
 		depthAttachment = .{image = dev.depthImage, loadOp=.CLEAR, storeOp=.STORE, clear.depth = 0.0}
 	});
 
-
-	viewport: VkViewport;
-	viewport.x = 0;
-	viewport.y = 0;
-	viewport.width = xx dev.drawExtent.width;
-	viewport.height = xx dev.drawExtent.height;
-	viewport.minDepth = 0.;
-	viewport.maxDepth = 1.;
-
-	vkCmdSetViewport(cmd.platformHandle, 0, 1, *viewport);
-
-	scissor: VkRect2D;
-	scissor.offset.x = 0;
-	scissor.offset.y = 0;
-	scissor.extent.width = dev.drawExtent.width;
-	scissor.extent.height = dev.drawExtent.height;
-
-	vkCmdSetScissor(cmd.platformHandle, 0, 1, *scissor);
+	set_viewport(cmd, .{
+		x = 0, y = 0,
+		width = xx dev.drawExtent.width,
+		height = xx dev.drawExtent.height,
+		minDepth = 0, maxDepth = 1
+	});
+	set_scissor(cmd, .{
+		x = 0, y = 0,
+		width = xx dev.drawExtent.width,
+		height = xx dev.drawExtent.height,
+	});
 
 	// draw mesh cube
 	set_pipeline(cmd, .GRAPHICS, dev.meshPipeline);
@@ -464,7 +456,7 @@ draw_geometry :: (cmd: *CommandBuffer, dev: *Device) {
 	set_push_constants(cmd, .VERTEX, 0, size_of(GpuDrawPushConstants), *pushConstants);
 	set_index_buffer(cmd, dev.cubeMesh.indexBuffer, 32);
 
-	vkCmdDrawIndexed(cmd.platformHandle, 36, 1, 0, 0, 0);
+	draw_indexed(cmd, 36, 1, 0, 0, 0);
 
 	end_rendering(cmd);
 }

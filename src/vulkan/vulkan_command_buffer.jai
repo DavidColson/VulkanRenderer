@@ -220,6 +220,30 @@ set_push_constants :: (cmd: *CommandBuffer, stage: ShaderStage, offset: u32, siz
 	vkCmdPushConstants(cmd.platformHandle, cmd.currentPipeline.pipelineLayout, shader_stage_to_vk(stage), offset, size, data);
 }
 
+draw_indexed :: (cmd: *CommandBuffer, indexCount: u32, instanceCount: u32, firstIndex: u32, vertexOffset: u32, firstInstance: u32) {
+	vkCmdDrawIndexed(cmd.platformHandle, indexCount, instanceCount, firstIndex, xx vertexOffset, firstInstance);
+}
+
+set_viewport :: (cmd: *CommandBuffer, opts: Viewport) {
+	viewport: VkViewport;
+	viewport.x = opts.x;
+	viewport.y = opts.y;
+	viewport.width = opts.width;
+	viewport.height = opts.height;
+	viewport.minDepth = opts.minDepth;
+	viewport.maxDepth = opts.maxDepth;
+	vkCmdSetViewport(cmd.platformHandle, 0, 1, *viewport);
+}
+
+set_scissor :: (cmd: *CommandBuffer, opts: Rect) {
+	scissor: VkRect2D;
+	scissor.offset.x = opts.x;
+	scissor.offset.y = opts.y;
+	scissor.extent.width = xx opts.width;
+	scissor.extent.height = xx opts.height;
+	vkCmdSetScissor(cmd.platformHandle, 0, 1, *scissor);
+}
+
 to_vk :: (loadop: RenderAttachmentLoadOp) -> VkAttachmentLoadOp {
 	if loadop == {
 		case .LOAD; return .LOAD; 

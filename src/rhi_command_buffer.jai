@@ -11,6 +11,15 @@ Rect :: struct {
 	height: s32;
 }
 
+Viewport :: struct {
+	x: float;
+	y: float;
+	width: float;
+	height: float;
+	minDepth: float;
+	maxDepth: float;
+}
+
 RenderAttachmentLoadOp :: enum {
 	LOAD;
 	CLEAR;
