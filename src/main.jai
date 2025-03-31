@@ -325,17 +325,18 @@ upload_mesh :: (dev: *Device, indices: []u32, vertices: []Vertex) -> GpuMeshBuff
 
 	cmd := rhi_device_acquire_command_buffer(dev);
 
-	vertexCopy: VkBufferCopy;
-	vertexCopy.dstOffset = 0;
-	vertexCopy.srcOffset = 0;
-	vertexCopy.size = xx vertexBufferSize;
-	vkCmdCopyBuffer(cmd.platformHandle, staging.buffer, mesh.vertexBuffer.buffer, 1, *vertexCopy);
+	copy_buffer_to_buffer(cmd, .{
+		src=staging,
+		dst=mesh.vertexBuffer,
+		size=vertexBufferSize
+	});
 
-	indexCopy: VkBufferCopy;
-	indexCopy.dstOffset = 0;
-	indexCopy.srcOffset = xx vertexBufferSize;
-	indexCopy.size = xx indexBufferSize;
-	vkCmdCopyBuffer(cmd.platformHandle, staging.buffer, mesh.indexBuffer.buffer, 1, *indexCopy);
+	copy_buffer_to_buffer(cmd, .{
+		src=staging,
+		dst=mesh.indexBuffer,
+		srcOffset=vertexBufferSize,
+		size=indexBufferSize
+	});
 
 	submit(cmd);
 	return mesh;
@@ -373,14 +374,6 @@ draw :: (dev: *Device) {
 	// draw background with compute
 	////////////////////////////////
 
-	// Actually clear our screen
-	// clear_value: VkClearColorValue;
-	// flash := abs(sin(cast(float32)dev.frame_number / 1020.0));
-	// clear_value._float32 = float32.[0.0, 0.0, xx flash, 1.0];
-	//  
-	// clear_range := image_subresource_range(.COLOR_BIT);
-	// vkCmdClearColorImage(cmd, dev.drawImage.image, .GENERAL, *clear_value, 1, *clear_range);
-
 	// compute to draw our gradient
 	vkCmdBindPipeline(cmd.platformHandle, .COMPUTE, dev.computePipeline);
 	vkCmdBindDescriptorSets(cmd.platformHandle, .COMPUTE, dev.computePipelineLayout, 0, 1, *dev.computeBindGroup.platformHandle, 0, null);
@@ -399,7 +392,13 @@ draw :: (dev: *Device) {
 		.{dev.drawImage, .WRITE_RENDER_TARGET, .COPY_SRC},
 		.{swapchainTexture, .NONE, .COPY_DST}
 	]);
-	copy_image_to_image(cmd.platformHandle, dev.drawImage.platformHandle, swapchainTexture.platformHandle, dev.drawExtent, dev.swapchainExtent);
+
+	copy_image_to_image(cmd, .{
+		src = dev.drawImage,
+		dst = swapchainTexture,
+		srcRect = .{ 0,0, xx dev.drawExtent.width, xx dev.drawExtent.height },
+		dstRect = .{ 0,0, xx dev.swapchainExtent.width, xx dev.swapchainExtent.height },}
+	);
 
 	barrier(cmd, .[.{swapchainTexture, .COPY_DST, .WRITE_RENDER_TARGET}]);
 

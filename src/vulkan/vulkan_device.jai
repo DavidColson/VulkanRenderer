@@ -504,40 +504,6 @@ rhi_device_reset_temporary_memory :: (using dev: *Device) {
 	}
 }
 
-// @todo: should be a function in the command buffer file
-copy_image_to_image :: (cmd: VkCommandBuffer, source: VkImage, destination: VkImage, srcSize: VkExtent2D, dstSize: VkExtent2D) {
-	blitRegion: VkImageBlit2;
-	blitRegion.srcOffsets[1].x = xx srcSize.width;
-	blitRegion.srcOffsets[1].y = xx srcSize.height;
-	blitRegion.srcOffsets[1].z = 1;
-
-	blitRegion.dstOffsets[1].x = xx dstSize.width;
-	blitRegion.dstOffsets[1].y = xx dstSize.height;
-	blitRegion.dstOffsets[1].z = 1;
-
-	blitRegion.srcSubresource.aspectMask = .COLOR_BIT;
-	blitRegion.srcSubresource.baseArrayLayer = 0;
-	blitRegion.srcSubresource.layerCount = 1;
-	blitRegion.srcSubresource.mipLevel = 0;
-
-	blitRegion.dstSubresource.aspectMask = .COLOR_BIT;
-	blitRegion.dstSubresource.baseArrayLayer = 0;
-	blitRegion.dstSubresource.layerCount = 1;
-	blitRegion.dstSubresource.mipLevel = 0;
-
-	blitInfo: VkBlitImageInfo2;
-	blitInfo.dstImage = destination;
-	blitInfo.dstImageLayout = .TRANSFER_DST_OPTIMAL;
-	blitInfo.srcImage = source;
-	blitInfo.srcImageLayout = .TRANSFER_SRC_OPTIMAL;
-	blitInfo.filter = .LINEAR;
-	blitInfo.regionCount = 1;
-	blitInfo.pRegions = *blitRegion;
-
-	vkCmdBlitImage2(cmd, *blitInfo);
-}
-
-
 // Type converters
 
 shader_stage_to_vk :: (shaderStage: ShaderStage) -> VkShaderStageFlags {

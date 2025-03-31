@@ -5,10 +5,10 @@
 
 // generic, probably can be shared somewhere?
 Rect :: struct {
-	x: s32;
-	y: s32;
-	width: s32;
-	height: s32;
+	x: s32 = 0;
+	y: s32 = 0;
+	width: s32 = 0;
+	height: s32 = 0;
 }
 
 Viewport :: struct {
@@ -58,4 +58,19 @@ TextureBarrier :: struct {
 	texture: Texture;
 	prevUsage: TextureUsage;
 	nextUsage: TextureUsage;
+}
+
+CopyImageInfo :: struct {
+	src: Texture;
+	dst: Texture;
+	srcRect: Rect;
+	dstRect: Rect;
+}
+
+CopyBufferInfo :: struct {
+	src: Buffer;
+	dst: Buffer;
+	size: s64 = 0;
+	srcOffset: s64 = 0;
+	dstOffset: s64 = 0;
 }

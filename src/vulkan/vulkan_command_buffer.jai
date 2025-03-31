@@ -244,6 +244,52 @@ set_scissor :: (cmd: *CommandBuffer, opts: Rect) {
 	vkCmdSetScissor(cmd.platformHandle, 0, 1, *scissor);
 }
 
+copy_image_to_image :: (cmd: *CommandBuffer, opts: CopyImageInfo) {
+	blitRegion: VkImageBlit2;
+	blitRegion.srcOffsets[0].x = xx opts.srcRect.x;
+	blitRegion.srcOffsets[0].y = xx opts.srcRect.y;
+	blitRegion.srcOffsets[0].z = 0;
+	blitRegion.srcOffsets[1].x = xx opts.srcRect.width;
+	blitRegion.srcOffsets[1].y = xx opts.srcRect.height;
+	blitRegion.srcOffsets[1].z = 1;
+
+	blitRegion.dstOffsets[0].x = xx opts.srcRect.x;
+	blitRegion.dstOffsets[0].y = xx opts.srcRect.y;
+	blitRegion.dstOffsets[0].z = 0;
+	blitRegion.dstOffsets[1].x = xx opts.srcRect.width;
+	blitRegion.dstOffsets[1].y = xx opts.srcRect.height;
+	blitRegion.dstOffsets[1].z = 1;
+
+	blitRegion.srcSubresource.aspectMask = .COLOR_BIT;
+	blitRegion.srcSubresource.baseArrayLayer = 0;
+	blitRegion.srcSubresource.layerCount = 1;
+	blitRegion.srcSubresource.mipLevel = 0;
+
+	blitRegion.dstSubresource.aspectMask = .COLOR_BIT;
+	blitRegion.dstSubresource.baseArrayLayer = 0;
+	blitRegion.dstSubresource.layerCount = 1;
+	blitRegion.dstSubresource.mipLevel = 0;
+
+	blitInfo: VkBlitImageInfo2;
+	blitInfo.dstImage = opts.dst.platformHandle;
+	blitInfo.dstImageLayout = .TRANSFER_DST_OPTIMAL;
+	blitInfo.srcImage = opts.src.platformHandle;
+	blitInfo.srcImageLayout = .TRANSFER_SRC_OPTIMAL;
+	blitInfo.filter = .LINEAR;
+	blitInfo.regionCount = 1;
+	blitInfo.pRegions = *blitRegion;
+
+	vkCmdBlitImage2(cmd.platformHandle, *blitInfo);
+}
+
+copy_buffer_to_buffer :: (cmd: *CommandBuffer, opts: CopyBufferInfo) {
+	copy: VkBufferCopy;
+	copy.dstOffset = xx opts.dstOffset;
+	copy.srcOffset = xx opts.srcOffset;
+	copy.size = xx opts.size;
+	vkCmdCopyBuffer(cmd.platformHandle, opts.src.buffer, opts.dst.buffer, 1, *copy);
+}
+
 to_vk :: (loadop: RenderAttachmentLoadOp) -> VkAttachmentLoadOp {
 	if loadop == {
 		case .LOAD; return .LOAD; 
