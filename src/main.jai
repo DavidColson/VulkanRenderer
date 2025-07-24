@@ -99,7 +99,7 @@ main :: () {
 						should_stop_rendering = true;
 					}
 			}
-			ImGui_ImplSDL2_ProcessEvent(*event);
+			// ImGui_ImplSDL2_ProcessEvent(*event);
 		}
 		draw(*device);
 		reset_temporary_storage();
@@ -109,12 +109,14 @@ main :: () {
 
 init_compute_pipeline :: (using dev: *Device) {
 	computeBindGroupLayout = rhi_device_create_bind_group_layout(dev, .{
+		debugName = "Compute Layout",
 		bindings = .[
 			.{0, .STORAGE_IMAGE, .COMPUTE }
 		]
 	});
 
 	computeBindGroup = rhi_device_create_bind_group(dev, .{
+		debugName = "Compute Bind Group",
 		layout = computeBindGroupLayout,
 		resources = .[
 			.{slot = 0, texture = drawImage }
@@ -122,13 +124,14 @@ init_compute_pipeline :: (using dev: *Device) {
 	});
 
 	computePipeline = rhi_device_create_compute_pipeline(dev, .{
+		debugName = "Compute Pipeline",
 		layouts = .[
 			computeBindGroupLayout
 		],
 		pushConstants = .[
 			.{ .COMPUTE, size_of(ComputePushConstants), 0 }
 		],
-		shader = rhi_device_create_shader(dev, #run SHADER_GET("gradient.comp")),
+		shader = rhi_device_create_shader(dev, #run SHADER_GET("gradient.comp"), "gradient.comp"),
 	});
 }
 
@@ -140,6 +143,7 @@ init_mesh_pipeline :: (using dev: *Device) {
 		imageData: *u8 = stbi_load("crate.png", *x, *y, *comp, 4);
 
 		crateTexture = rhi_device_create_texture(dev, .{
+			debugName = "crate.png",
 			format = .RGBA8,
 			size = .{ width = x, height = y, depth=1},
 			usage = .READ_SHADER,
@@ -148,11 +152,13 @@ init_mesh_pipeline :: (using dev: *Device) {
 	}
 
 	linearSampler = rhi_device_create_sampler(dev, .{
+		debugName = "Linear Sampler",
 		magFilter = .LINEAR,
 		minFilter = .LINEAR,
 	});
 
 	cubeMaterialBindGroupLayout = rhi_device_create_bind_group_layout(dev, .{
+		debugName = "Cube Material Layout",
 		bindings = .[
 			.{ 0, .SAMPLED_IMAGE, .PIXEL },
 			.{ 1, .SAMPLER, .PIXEL },
@@ -160,6 +166,7 @@ init_mesh_pipeline :: (using dev: *Device) {
 	});
 
 	cubeMaterialBindGroup = rhi_device_create_bind_group(dev, .{
+		debugName = "Cube Material",
 		layout = cubeMaterialBindGroupLayout,
 		resources = .[
 			.{slot = 0, texture = crateTexture},
@@ -168,14 +175,15 @@ init_mesh_pipeline :: (using dev: *Device) {
 	});
 
 	meshPipeline = rhi_device_create_pipeline(dev, .{
+		debugName = "Mesh Pipeline",
 		layouts = .[
 			cubeMaterialBindGroupLayout
 		],
 		pushConstants = .[
 			.{ .VERTEX, size_of(GpuDrawPushConstants), 0 }
 		],
-		vertexShader = rhi_device_create_shader(dev, #run SHADER_GET("colored_triangle_mesh.vert")),
-		fragmentShader = rhi_device_create_shader(dev, #run SHADER_GET("colored_triangle.frag")),
+		vertexShader = rhi_device_create_shader(dev, #run SHADER_GET("colored_triangle_mesh.vert"), "colored_triangle_mesh.vert"),
+		fragmentShader = rhi_device_create_shader(dev, #run SHADER_GET("colored_triangle.frag"), "colored_triangle.frag"),
 		topology = .TRIANGLE_LIST,
 		rasterizer = .{
 			polygonMode = .FILL,
@@ -261,22 +269,24 @@ init_cube_mesh :: (using dev: *Device) {
         4, 5, 7
 	];
 
-	cubeMesh = upload_mesh(dev, cubeIndices, cubeVerts);
+	cubeMesh = upload_mesh(dev, cubeIndices, cubeVerts, "Cube Mesh");
 }
 
-upload_mesh :: (dev: *Device, indices: []u32, vertices: []Vertex) -> GpuMeshBuffers {
+upload_mesh :: (dev: *Device, indices: []u32, vertices: []Vertex, debugName: string) -> GpuMeshBuffers {
 	vertexBufferSize := vertices.count * size_of(Vertex);
 	indexBufferSize := indices.count * size_of(u32);
 
 	mesh: GpuMeshBuffers;
 
 	mesh.vertexBuffer = rhi_device_create_buffer(dev, .{
+		debugName = tprint("% - Vertex Buffer", debugName),
 		size = xx vertexBufferSize,
 		usage = .READ_AND_WRITE | .COPY_DST | .SHADER_DEVICE_ADDRESS,
 		memory = .GPU_ONLY
 	});
 
 	mesh.indexBuffer = rhi_device_create_buffer(dev, .{
+		debugName = tprint("% - Index Buffer", debugName),
 		size = xx indexBufferSize,
 		usage = .INDEX_BUFFER | .COPY_DST,
 		memory = .GPU_ONLY
@@ -311,13 +321,14 @@ upload_mesh :: (dev: *Device, indices: []u32, vertices: []Vertex) -> GpuMeshBuff
 	});
 
 	submit(cmd);
+	rhi_device_destroy_buffer(dev, *staging);
 	return mesh;
 }
 
 draw :: (dev: *Device) {
-	ImGui_ImplVulkan_NewFrame();
-	ImGui_ImplSDL2_NewFrame();
-	ImGui.NewFrame();
+	// ImGui_ImplVulkan_NewFrame();
+	// ImGui_ImplSDL2_NewFrame();
+	// ImGui.NewFrame();
 
 
 	// ImGui.ShowDemoWindow();
@@ -330,7 +341,7 @@ draw :: (dev: *Device) {
 	// }
 	// ImGui.End();
 
-	ImGui.Render();
+	// ImGui.Render();
 
 	cmd := rhi_device_acquire_command_buffer(dev);
 
@@ -339,6 +350,7 @@ draw :: (dev: *Device) {
 	dev.drawExtent.width = xx dev.drawImage.size.width;
 	dev.drawExtent.height = xx dev.drawImage.size.height;
 
+	marker_start(cmd, "Compute Drawing");
 
 	// barrier for starting compute pass (draw image goes to write)
 	barrier(cmd, .[.{dev.drawImage, .NONE, .READ_WRITE_COMPUTE}]);
@@ -351,6 +363,8 @@ draw :: (dev: *Device) {
 	set_bind_group(cmd, .COMPUTE, dev.computeBindGroup);
 	set_push_constants(cmd, .COMPUTE, 0, size_of(ComputePushConstants), *dev.pc);
 	dispatch(cmd, xx ceil(dev.drawExtent.width / 16.0), xx ceil(dev.drawExtent.width / 16.0), 1);
+
+	marker_end(cmd);
 
 	barrier(cmd, .[
 		.{dev.drawImage, .READ_WRITE_COMPUTE, .WRITE_RENDER_TARGET},
@@ -374,14 +388,14 @@ draw :: (dev: *Device) {
 	barrier(cmd, .[.{swapchainTexture, .COPY_DST, .WRITE_RENDER_TARGET}]);
 
 	// draw imgui render lists
-	begin_rendering(cmd, .{
-		renderArea = .{0, 0, xx dev.swapchainExtent.width, xx dev.swapchainExtent.height},
-		colorAttachments = .[ .{image = swapchainTexture, loadOp=.LOAD, storeOp=.STORE} ]
-	});
+	// begin_rendering(cmd, .{
+	// 	renderArea = .{0, 0, xx dev.swapchainExtent.width, xx dev.swapchainExtent.height},
+	// 	colorAttachments = .[ .{image = swapchainTexture, loadOp=.LOAD, storeOp=.STORE} ]
+	// });
 
-	ImGui_ImplVulkan_RenderDrawData(ImGui.GetDrawData(), cmd.platformHandle);
+	// ImGui_ImplVulkan_RenderDrawData(ImGui.GetDrawData(), cmd.platformHandle);
 
-	end_rendering(cmd);
+	// end_rendering(cmd);
 
 	barrier(cmd, .[.{swapchainTexture, .WRITE_RENDER_TARGET, .PRESENT}]);
 
@@ -389,6 +403,8 @@ draw :: (dev: *Device) {
 }
 
 draw_geometry :: (cmd: *CommandBuffer, dev: *Device) {
+	marker_start(cmd, "Drawing Geometry");
+
 	begin_rendering(cmd, .{
 		renderArea = .{0, 0, xx dev.drawExtent.width, xx dev.drawExtent.height},
 		colorAttachments = .[ .{image = dev.drawImage, loadOp=.LOAD, storeOp=.STORE} ],
@@ -429,6 +445,7 @@ draw_geometry :: (cmd: *CommandBuffer, dev: *Device) {
 	draw_indexed(cmd, 36, 1, 0, 0, 0);
 
 	end_rendering(cmd);
+	marker_end(cmd);
 }
 
 logger :: (message: string, data: *void, info: Log_Info) {

@@ -195,6 +195,17 @@ barrier :: (cmd: *CommandBuffer, textureBarriers: []TextureBarrier) {
     vkCmdPipelineBarrier2(cmd.platformHandle, *dep_info);
 }
 
+marker_start :: (cmd: *CommandBuffer, label: string) {
+	labelInfo: VkDebugUtilsLabelEXT;
+	labelInfo.pLabelName = label.data;
+
+	vkCmdBeginDebugUtilsLabelEXT(cmd.dev.instance, cmd.platformHandle, *labelInfo);
+}
+
+marker_end :: (cmd: *CommandBuffer) {
+	vkCmdEndDebugUtilsLabelEXT(cmd.dev.instance, cmd.platformHandle);
+}
+
 set_pipeline :: (cmd: *CommandBuffer, bindPoint: BindPoint, pipeline: Pipeline) {
 	cmd.currentPipeline = pipeline;
 	vkCmdBindPipeline(cmd.platformHandle, to_vk(bindPoint), pipeline.platformHandle);
@@ -393,3 +404,17 @@ texture_usage_to_barrier :: (usage: TextureUsage, textureFormat: PixelFormat, st
 	}
 }
 
+vkCmdBeginDebugUtilsLabelEXT :: (instance: VkInstance, cmd: VkCommandBuffer, pLabelInfo: *VkDebugUtilsLabelEXT) {
+	func := cast(PFN_vkCmdBeginDebugUtilsLabelEXT) vkGetInstanceProcAddr(instance, "vkCmdBeginDebugUtilsLabelEXT");
+	if func != null then func(cmd, pLabelInfo);
+}
+
+vkCmdInsertDebugUtilsLabelEXT :: (instance: VkInstance, cmd: VkCommandBuffer, pLabelInfo: *VkDebugUtilsLabelEXT) {
+	func := cast(PFN_vkCmdInsertDebugUtilsLabelEXT) vkGetInstanceProcAddr(instance, "vkCmdInsertDebugUtilsLabelEXT");
+	if func != null then func(cmd, pLabelInfo);
+}
+
+vkCmdEndDebugUtilsLabelEXT :: (instance: VkInstance, cmd: VkCommandBuffer) {
+	func := cast(PFN_vkCmdEndDebugUtilsLabelEXT) vkGetInstanceProcAddr(instance, "vkCmdEndDebugUtilsLabelEXT");
+	if func != null then func(cmd);
+}

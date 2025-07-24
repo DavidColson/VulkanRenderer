@@ -106,11 +106,14 @@ rhi_device_init :: (dev: *Device, window: *SDL_Window, width: s32, height: s32) 
 	dev.width = width;
 	dev.height = height;
 
+	dev.globalDescriptorPool.debugName = "Global Descriptor Pool";
+	dev.perFrameDescriptorPool.debugName = "Per Frame Descriptor Pool";
+
 	init_vulkan(dev);
 	init_swapchain(dev);
 	init_swapchain_image_views(dev);
 	init_commands(dev);
-	init_imgui(dev);
+	// init_imgui(dev);
 
 	dev.pc.data1 = Vector4.{1, 0, 0, 1};
 	dev.pc.data2 = Vector4.{0, 0, 1, 1};
@@ -128,6 +131,7 @@ rhi_device_acquire_command_buffer :: (using dev: *Device) -> *CommandBuffer {
 				flags = .ONE_TIME_SUBMIT_BIT
 			};
 			vkBeginCommandBuffer(it.platformHandle, *beginInfo);
+			vk_set_debug_name(dev, xx it.platformHandle, .VK_OBJECT_TYPE_COMMAND_BUFFER, tprint("Command Buffer - % ", it_index));
 			return it;
 		}
 	}
@@ -157,6 +161,10 @@ rhi_device_create_bind_group_layout :: (using dev: *Device, opts: BindGroupLayou
 	result := vkCreateDescriptorSetLayout(dev.vkDevice, *info, null, *layout.platformHandle);
 	assert(result == .SUCCESS, "Could not create descriptor set layout");
 
+	if opts.debugName.count {
+		vk_set_debug_name(dev, xx layout.platformHandle, .VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, opts.debugName);
+	}
+
 	layout.bindings = opts.bindings;
 	return layout;
 }
@@ -167,7 +175,7 @@ rhi_device_create_bind_group :: (using dev: *Device, opts: BindGroupDesc) -> Bin
 		pool = *dev.perFrameDescriptorPool;
 	}
 
-	create_new_pool :: (using dev: *Device) -> VkDescriptorPool {
+	create_new_pool :: (using dev: *Device, index: s64, debugName: string) -> VkDescriptorPool {
 		poolSizes: []VkDescriptorPoolSize = .[
 			.{type = .SAMPLER, descriptorCount = 20 },
 			.{type = .SAMPLED_IMAGE, descriptorCount = 100 },
@@ -184,12 +192,16 @@ rhi_device_create_bind_group :: (using dev: *Device, opts: BindGroupDesc) -> Bin
 
 		pool: VkDescriptorPool;
 		result := vkCreateDescriptorPool(dev.vkDevice, *poolInfo, null, *pool);
+
+		if debugName.count {
+			vk_set_debug_name(dev, xx pool, .VK_OBJECT_TYPE_DESCRIPTOR_POOL, tprint("% - %", debugName, index));
+		}
 		return pool;
 	}
 
 	// attempt allocation in top most pool
 	if pool.pools.count == 0 {
-		array_add(*pool.pools, create_new_pool(dev));
+		array_add(*pool.pools, create_new_pool(dev, pool.pools.count, pool.debugName));
 	}
 
 	allocInfo: VkDescriptorSetAllocateInfo;
@@ -202,9 +214,13 @@ rhi_device_create_bind_group :: (using dev: *Device, opts: BindGroupDesc) -> Bin
 
 	// if it fails, make a new pool
 	if result == .ERROR_OUT_OF_POOL_MEMORY || result == .ERROR_FRAGMENTED_POOL {
-		array_add(*pool.pools, create_new_pool(dev));
+		array_add(*pool.pools, create_new_pool(dev, pool.pools.count, pool.debugName));
 		allocInfo.descriptorPool = pool.pools[pool.pools.count-1];
 		result = vkAllocateDescriptorSets(dev.vkDevice, *allocInfo, *descriptorSet);
+	}
+
+	if opts.debugName.count {
+		vk_set_debug_name(dev, xx descriptorSet, .VK_OBJECT_TYPE_DESCRIPTOR_SET, opts.debugName);
 	}
 
 	// count descriptor type allocations in the pool (mostly for tracking how well we've balanced the pool sizes)
@@ -298,6 +314,9 @@ rhi_device_create_pipeline :: (using dev: *Device, opts: PipelineDesc) -> Pipeli
 	layout: VkPipelineLayout;
 	vkCreatePipelineLayout(dev.vkDevice, *layoutCreateInfo, null, *layout);
 	pipelineInfo.layout = layout;
+	if opts.debugName.count {
+		vk_set_debug_name(dev, xx layout, .VK_OBJECT_TYPE_PIPELINE_LAYOUT, tprint("% - Pipeline Layout", opts.debugName));
+	}
 
 	renderInfo: VkPipelineRenderingCreateInfo;
 	colorTargetFormats: [MAX_COLOR_TARGETS]VkFormat;
@@ -381,12 +400,12 @@ rhi_device_create_pipeline :: (using dev: *Device, opts: PipelineDesc) -> Pipeli
 
 	pipeline: Pipeline;
 	pipeline.pipelineLayout = layout;
-	if vkCreateGraphicsPipelines(dev.vkDevice, VK_NULL_HANDLE, 1, *pipelineInfo, null, *pipeline.platformHandle) == .SUCCESS {
-		return pipeline;
-	}
+	result := vkCreateGraphicsPipelines(dev.vkDevice, VK_NULL_HANDLE, 1, *pipelineInfo, null, *pipeline.platformHandle);
+	assert(result == .SUCCESS, "Failed to create compute pipeline");
 
-	// @todo: should probably crash the program here tbh
-	print("Failed to create pipeline");
+	if opts.debugName.count {
+		vk_set_debug_name(dev, xx pipeline.platformHandle, .VK_OBJECT_TYPE_PIPELINE, opts.debugName);
+	}
 	return pipeline;
 }
 
@@ -414,6 +433,9 @@ rhi_device_create_compute_pipeline :: (using dev: *Device, opts: ComputePipeline
 	layout: VkPipelineLayout;
 	vkCreatePipelineLayout(dev.vkDevice, *layoutCreateInfo, null, *layout);
 	computePipelineCreateInfo.layout = layout;
+	if opts.debugName.count {
+		vk_set_debug_name(dev, xx layout, .VK_OBJECT_TYPE_PIPELINE_LAYOUT, tprint("% - Pipeline Layout", opts.debugName));
+	}
 
 	stageInfo: VkPipelineShaderStageCreateInfo;
 	stageInfo.stage = .COMPUTE_BIT;
@@ -426,6 +448,9 @@ rhi_device_create_compute_pipeline :: (using dev: *Device, opts: ComputePipeline
 	result := vkCreateComputePipelines(dev.vkDevice, null, 1, *computePipelineCreateInfo, null, *pipeline.platformHandle);
 	assert(result == .SUCCESS, "Failed to create compute pipeline");
 
+	if opts.debugName.count {
+		vk_set_debug_name(dev, xx pipeline.platformHandle, .VK_OBJECT_TYPE_PIPELINE, opts.debugName);
+	}
 	return pipeline;
 }
 
@@ -452,6 +477,9 @@ rhi_device_create_texture :: (using dev: *Device, opts: TextureDesc) -> Texture 
 	imgAllocInfo.requiredFlags = .DEVICE_LOCAL_BIT;
 
 	vmaCreateImage(gpuAllocator, *imageInfo, *imgAllocInfo, *image.platformHandle, *image.allocation, null);
+	if opts.debugName.count {
+		vk_set_debug_name(dev, xx image.platformHandle, .VK_OBJECT_TYPE_IMAGE, tprint("% - Image", opts.debugName));
+	}
 
 	aspectFlag: VkImageAspectFlags = .COLOR_BIT;
 	if opts.format == .DEPTH {
@@ -460,6 +488,9 @@ rhi_device_create_texture :: (using dev: *Device, opts: TextureDesc) -> Texture 
 	imageViewInfo := image_view_create_info(imageInfo.format, image.platformHandle, aspectFlag);
 
 	vkCreateImageView(dev.vkDevice, *imageViewInfo, null, *image.imageViewHandle);
+	if opts.debugName.count {
+		vk_set_debug_name(dev, xx image.imageViewHandle, .VK_OBJECT_TYPE_IMAGE_VIEW, tprint("% - Image View", opts.debugName));
+	}
 
 	// directly upload data if given
 	if opts.data {
@@ -503,10 +534,13 @@ rhi_device_create_sampler :: (dev: *Device, opts: SamplerDesc) -> Sampler {
 
 	sampler: Sampler;
 	vkCreateSampler(dev.vkDevice, *samplerInfo, null, *sampler.platformHandle);
+	if opts.debugName.count {
+		vk_set_debug_name(dev, xx sampler.platformHandle, .VK_OBJECT_TYPE_SAMPLER, opts.debugName);
+	}
 	return sampler;
 }
 
-rhi_device_create_shader :: (dev: *Device, bytes: []u8) -> Shader {
+rhi_device_create_shader :: (dev: *Device, bytes: []u8, debugName: string = "") -> Shader {
 	createInfo: VkShaderModuleCreateInfo;
 	createInfo.codeSize = xx bytes.count;
 	createInfo.pCode = cast(*u32) bytes.data;
@@ -514,6 +548,9 @@ rhi_device_create_shader :: (dev: *Device, bytes: []u8) -> Shader {
 	shaderModule: VkShaderModule;
 	result := vkCreateShaderModule(dev.vkDevice, *createInfo, null, *shaderModule);
 	assert(result == .SUCCESS, "Failed to create shader module");
+	if debugName.count {
+		vk_set_debug_name(dev, xx shaderModule, .VK_OBJECT_TYPE_SHADER_MODULE, debugName);
+	}
 	return .{platformHandle = shaderModule};
 }
 
@@ -528,6 +565,10 @@ rhi_device_create_buffer :: (dev: *Device, opts: BufferDesc) -> Buffer {
 	newBuffer: Buffer;
 	result := vmaCreateBuffer(dev.gpuAllocator, *info, *allocInfo, *newBuffer.buffer, *newBuffer.allocation, *newBuffer.info);
 	assert(result == .SUCCESS, "Failed to allocate buffer");
+
+	if opts.debugName.count {
+		vk_set_debug_name(dev, xx newBuffer.buffer, .VK_OBJECT_TYPE_BUFFER, opts.debugName);
+	}
 
 	if opts.usage & .SHADER_DEVICE_ADDRESS {
 		deviceAddressInfo: VkBufferDeviceAddressInfo;
@@ -836,9 +877,13 @@ init_vulkan :: (dev: *Device) -> bool {
 
 	result = vkCreateDevice(dev.physicalDevice, *device_create_info, null, *dev.vkDevice);
 	assert(result == .SUCCESS, "Failed to create logical device!");
+	vk_set_debug_name(dev, xx dev.vkDevice, .VK_OBJECT_TYPE_DEVICE, "Primary Device");
+	vk_set_debug_name(dev, xx dev.instance, .VK_OBJECT_TYPE_INSTANCE, "Primary Instance");
 
 	vkGetDeviceQueue(dev.vkDevice, indices.graphics_family, 0, *dev.graphicsQueue);
+	vk_set_debug_name(dev, xx dev.graphicsQueue, .VK_OBJECT_TYPE_QUEUE, "Graphics Queue");
 	vkGetDeviceQueue(dev.vkDevice, indices.present_family, 0, *dev.presentQueue);
+	vk_set_debug_name(dev, xx dev.presentQueue, .VK_OBJECT_TYPE_QUEUE, "Present Queue");
 
 	dev.graphicsQueueFamily = indices.graphics_family;
 	dev.presentQueueFamily = indices.graphics_family;
@@ -894,6 +939,7 @@ init_swapchain :: (using dev: *Device) {
 
 	result := vkCreateSwapchainKHR(vkDevice, *create_info, null, *swapchain);
 	assert(result == .SUCCESS, "Failed to create swapchain");
+	vk_set_debug_name(dev, xx swapchain, .VK_OBJECT_TYPE_SWAPCHAIN_KHR, "Primary Swapchain");
 
 	nImages: u32 = xx nInFlightFrames;
 	vkGetSwapchainImagesKHR(vkDevice, swapchain, *nImages, null);
@@ -920,6 +966,8 @@ init_swapchain :: (using dev: *Device) {
 		createdInfo.subresourceRange.layerCount = 1;
 
 		result := vkCreateImageView(vkDevice, *createdInfo, null, *swapchainImageViews[it_index]);
+		vk_set_debug_name(dev, xx swapchainImageViews[it_index], .VK_OBJECT_TYPE_IMAGE_VIEW, tprint("Swapchain Image View - %", it_index));
+		vk_set_debug_name(dev, xx swapchainImages[it_index], .VK_OBJECT_TYPE_IMAGE, tprint("Swapchain Image - %", it_index));
 	}
 
 	array_resize(*swapchainSemaphores, swapchainImages.count);
@@ -932,19 +980,23 @@ init_swapchain :: (using dev: *Device) {
 
 		result = vkCreateSemaphore(vkDevice, *semaphoreCreateInfo, null, *swapchainSemaphores[it]);
 		assert(result == .SUCCESS, "Could not create semaphore.");
+		vk_set_debug_name(dev, xx swapchainSemaphores[it], .VK_OBJECT_TYPE_SEMAPHORE, tprint("Swapchain Semaphore - %", it));
 
 		result = vkCreateSemaphore(vkDevice, *semaphoreCreateInfo, null, *renderSemaphores[it]);
 		assert(result == .SUCCESS, "Could not create semaphore.");
+		vk_set_debug_name(dev, xx renderSemaphores[it], .VK_OBJECT_TYPE_SEMAPHORE, tprint("Render Semaphore - %", it));
 	}
 
 	// @todo: these need to moved to higher level rendering, they are not the swapchain images, just render targets
 	drawImage = rhi_device_create_texture(dev, .{
+		debugName = "Primary Color Target",
 		format = .RGBA16F,
 		size = .{width = WIDTH, height = HEIGHT, depth=1},
 		usage = .COPY_ALL | .READ_WRITE_SHADER | .WRITE_RENDER_TARGET,
 	});
 
 	depthImage = rhi_device_create_texture(dev, .{
+		debugName = "Primary Depth Target",
 		format = .DEPTH,
 		size = drawImage.size,
 		usage = .READ_WRITE_RENDER_TARGET
@@ -965,6 +1017,7 @@ init_commands :: (using dev: *Device) {
 
 		result := vkCreateCommandPool(vkDevice, *commandPoolInfo, null, *it.commandPool);
 		assert(result == .SUCCESS, "Could not create command pool.");
+		vk_set_debug_name(dev, xx it.commandPool, .VK_OBJECT_TYPE_COMMAND_POOL, tprint("Command Buffer Pool - %", it_index));
 
 		cmdAllocInfo := VkCommandBufferAllocateInfo.{
 			commandPool = it.commandPool,
@@ -985,6 +1038,7 @@ init_commands :: (using dev: *Device) {
 
 		result = vkCreateFence(vkDevice, *fenceCreateInfo, null, *it.inFlightFence);
 		assert(result == .SUCCESS, "Could not create fence.");
+		vk_set_debug_name(dev, xx it.inFlightFence, .VK_OBJECT_TYPE_FENCE, tprint("Command Buffer Fence - %", it_index));
 
 		vkResetFences(vkDevice, 1, *it.inFlightFence);
 	}
@@ -1178,6 +1232,7 @@ rate_device_suitability :: (device: VkPhysicalDevice, surface: VkSurfaceKHR) -> 
 	score := 100;
 	if properties.properties.deviceType == .DISCRETE_GPU then score += 1000;
 	score += properties.properties.limits.maxImageDimension2D;
+
 	
 	return score;
 }
@@ -1367,9 +1422,19 @@ choose_swapchain_extent :: (capabilities: VkSurfaceCapabilitiesKHR, window: *SDL
 	return extent;
 }
 
+vk_set_debug_name :: (dev: Device, handle: u64, type: VkObjectType, name: string) {
+	nameInfo: VkDebugUtilsObjectNameInfoEXT;
+	nameInfo.objectType = type;
+	nameInfo.objectHandle = handle;
+	nameInfo.pObjectName = name.data;
+
+	vkSetDebugUtilsObjectNameEXT(dev.instance, dev.vkDevice, *nameInfo);
+}
+
 // descriptor pool management
 
 DescriptorPool :: struct {
+	debugName: string;
 	pools: [..]VkDescriptorPool;
 	descriptorCounts: [BindingType.NUM_BINDING_TYPES]u32;
 }
@@ -1396,3 +1461,10 @@ image_view_create_info :: (format: VkFormat, image: VkImage, aspectFlags: VkImag
 
 VALIDATION_ENABLED :: BUILD_TYPE != .RELEASE;
 REQUIRED_VALIDATION_LAYERS :: (*u8).["VK_LAYER_KHRONOS_validation"];
+
+vkSetDebugUtilsObjectNameEXT :: (instance: VkInstance, device: VkDevice, pNameInfo: *VkDebugUtilsObjectNameInfoEXT) {
+	// This loads the function pointer every call, could we potentially do better than that?
+	func := cast(PFN_vkSetDebugUtilsObjectNameEXT) vkGetInstanceProcAddr(instance, "vkSetDebugUtilsObjectNameEXT");
+	if func != null then func(device, pNameInfo);
+}
+

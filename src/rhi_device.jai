@@ -87,6 +87,7 @@ DepthStencil :: struct {
 MAX_COLOR_TARGETS :: 8;
 
 PipelineDesc :: struct {
+	debugName: string;
 	layouts: []BindGroupLayout;
 	vertexShader: Shader;
 	fragmentShader: Shader;
@@ -100,6 +101,7 @@ PipelineDesc :: struct {
 }
 
 ComputePipelineDesc :: struct {
+	debugName: string;
 	layouts: []BindGroupLayout;
 	pushConstants: []PushConstantDesc;
 	shader: Shader;
@@ -121,6 +123,7 @@ Binding :: struct {
 }
 
 BindGroupLayoutDesc :: struct {
+	debugName: string;
 	bindings: []Binding;
 }
 
@@ -132,6 +135,7 @@ ResourceBind :: struct {
 }
 
 BindGroupDesc :: struct {
+	debugName: string;
 	layout: BindGroupLayout;
 	temp: bool = false;
 	resources: []ResourceBind;
@@ -144,6 +148,7 @@ PushConstantDesc :: struct {
 }
 
 SamplerDesc :: struct {
+	debugName: string;
 	// @todo: options!!
 	magFilter: VkFilter;
 	minFilter: VkFilter;
@@ -192,6 +197,7 @@ TextureUsage :: enum_flags {
 }
 
 TextureDesc :: struct {
+	debugName: string;
 	format: PixelFormat;
 	size: TextureSize;
 	usage: TextureUsage;
@@ -216,6 +222,7 @@ MemoryUsageFlags :: enum {
 }
 
 BufferDesc :: struct {
+	debugName: string;
 	size: s32;
 	usage: BufferUsageFlags;
 	memory: MemoryUsageFlags;
