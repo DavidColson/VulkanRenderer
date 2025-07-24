@@ -121,38 +121,15 @@ init_compute_pipeline :: (using dev: *Device) {
 		]
 	});
 
-	// @todo compute pipeline, to refactor into rhi style
-	computeLayout: VkPipelineLayoutCreateInfo;
-	computeLayout.pSetLayouts = *computeBindGroupLayout.platformHandle;
-	computeLayout.setLayoutCount = 1;
-
-	pushConstant: VkPushConstantRange;
-	pushConstant.offset = 0;
-	pushConstant.size = size_of(ComputePushConstants);
-	pushConstant.stageFlags = .COMPUTE_BIT;
-
-	computeLayout.pPushConstantRanges = *pushConstant;
-	computeLayout.pushConstantRangeCount = 1;
-	vkCreatePipelineLayout(dev.vkDevice, *computeLayout, null, *computePipelineLayout);
-
-	// compile time load the shader binary
-	// @todo potentially you can auto create these constants in the build code for each filename that gets compiled
-	GRADIENT_SHADER :: #run SHADER_GET("gradient.comp");
-	computeDrawShader := rhi_device_create_shader(dev, GRADIENT_SHADER);
-
-	stageInfo: VkPipelineShaderStageCreateInfo;
-	stageInfo.stage = .COMPUTE_BIT;
-	stageInfo.module = computeDrawShader.platformHandle;
-	stageInfo.pName = "main";
-
-	computePipelineCreateInfo: VkComputePipelineCreateInfo;
-	computePipelineCreateInfo.layout = computePipelineLayout;
-	computePipelineCreateInfo.stage = stageInfo;
-
-	result := vkCreateComputePipelines(dev.vkDevice, null, 1, *computePipelineCreateInfo, null, *computePipeline);
-	assert(result == .SUCCESS, "Failed to create compute pipeline");
-
-	vkDestroyShaderModule(dev.vkDevice, computeDrawShader.platformHandle, null);
+	computePipeline = rhi_device_create_compute_pipeline(dev, .{
+		layouts = .[
+			computeBindGroupLayout
+		],
+		pushConstants = .[
+			.{ .COMPUTE, size_of(ComputePushConstants), 0 }
+		],
+		shader = rhi_device_create_shader(dev, #run SHADER_GET("gradient.comp")),
+	});
 }
 
 init_mesh_pipeline :: (using dev: *Device) {
@@ -370,11 +347,10 @@ draw :: (dev: *Device) {
 	////////////////////////////////
 
 	// compute to draw our gradient
-	vkCmdBindPipeline(cmd.platformHandle, .COMPUTE, dev.computePipeline);
-	vkCmdBindDescriptorSets(cmd.platformHandle, .COMPUTE, dev.computePipelineLayout, 0, 1, *dev.computeBindGroup.platformHandle, 0, null);
-
-	vkCmdPushConstants(cmd.platformHandle, dev.computePipelineLayout, .COMPUTE_BIT, 0, size_of(ComputePushConstants), *dev.pc);
-	vkCmdDispatch(cmd.platformHandle, xx ceil(dev.drawExtent.width / 16.0), xx ceil(dev.drawExtent.width / 16.0), 1);
+	set_pipeline(cmd, .COMPUTE, dev.computePipeline);
+	set_bind_group(cmd, .COMPUTE, dev.computeBindGroup);
+	set_push_constants(cmd, .COMPUTE, 0, size_of(ComputePushConstants), *dev.pc);
+	dispatch(cmd, xx ceil(dev.drawExtent.width / 16.0), xx ceil(dev.drawExtent.width / 16.0), 1);
 
 	barrier(cmd, .[
 		.{dev.drawImage, .READ_WRITE_COMPUTE, .WRITE_RENDER_TARGET},

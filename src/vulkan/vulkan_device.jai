@@ -48,8 +48,7 @@ Device :: struct {
 	cubeMaterialBindGroup: BindGroup;
 	computeBindGroupLayout: BindGroupLayout;
 	computeBindGroup: BindGroup;
-	computePipeline: VkPipeline;
-	computePipelineLayout: VkPipelineLayout;
+	computePipeline: Pipeline;
 	pc: ComputePushConstants;
 }
 
@@ -388,6 +387,45 @@ rhi_device_create_pipeline :: (using dev: *Device, opts: PipelineDesc) -> Pipeli
 
 	// @todo: should probably crash the program here tbh
 	print("Failed to create pipeline");
+	return pipeline;
+}
+
+rhi_device_create_compute_pipeline :: (using dev: *Device, opts: ComputePipelineDesc) -> Pipeline {
+	computePipelineCreateInfo: VkComputePipelineCreateInfo;
+	
+	pushConstants: [ShaderStage.NUM_STAGES]VkPushConstantRange;
+	for 0..opts.pushConstants.count-1 {
+		pushConstants[it].offset = xx opts.pushConstants[it].offset;
+		pushConstants[it].size = xx opts.pushConstants[it].size;
+		pushConstants[it].stageFlags = shader_stage_to_vk(opts.pushConstants[it].stage);
+	}
+
+	setLayouts: [3]VkDescriptorSetLayout;
+	for 0..opts.layouts.count-1 {
+		setLayouts[it] = opts.layouts[it].platformHandle;
+	}
+
+	layoutCreateInfo: VkPipelineLayoutCreateInfo;
+	layoutCreateInfo.pPushConstantRanges = pushConstants.data;
+	layoutCreateInfo.pushConstantRangeCount = xx opts.pushConstants.count;
+	layoutCreateInfo.pSetLayouts = setLayouts.data;
+	layoutCreateInfo.setLayoutCount = xx opts.layouts.count;
+
+	layout: VkPipelineLayout;
+	vkCreatePipelineLayout(dev.vkDevice, *layoutCreateInfo, null, *layout);
+	computePipelineCreateInfo.layout = layout;
+
+	stageInfo: VkPipelineShaderStageCreateInfo;
+	stageInfo.stage = .COMPUTE_BIT;
+	stageInfo.module = opts.shader.platformHandle;
+	stageInfo.pName = "main";
+	computePipelineCreateInfo.stage = stageInfo;
+	
+	pipeline: Pipeline;
+	pipeline.pipelineLayout = layout;
+	result := vkCreateComputePipelines(dev.vkDevice, null, 1, *computePipelineCreateInfo, null, *pipeline.platformHandle);
+	assert(result == .SUCCESS, "Failed to create compute pipeline");
+
 	return pipeline;
 }
 

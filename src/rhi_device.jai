@@ -99,6 +99,12 @@ PipelineDesc :: struct {
 	pushConstants: []PushConstantDesc;
 }
 
+ComputePipelineDesc :: struct {
+	layouts: []BindGroupLayout;
+	pushConstants: []PushConstantDesc;
+	shader: Shader;
+}
+
 BindingType :: enum {
     SAMPLER;
     SAMPLED_IMAGE;

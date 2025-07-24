@@ -224,6 +224,10 @@ draw_indexed :: (cmd: *CommandBuffer, indexCount: u32, instanceCount: u32, first
 	vkCmdDrawIndexed(cmd.platformHandle, indexCount, instanceCount, firstIndex, xx vertexOffset, firstInstance);
 }
 
+dispatch :: (cmd: *CommandBuffer, x: u32, y: u32, z: u32) {
+	vkCmdDispatch(cmd.platformHandle, x, y, z);
+}
+
 set_viewport :: (cmd: *CommandBuffer, opts: Viewport) {
 	viewport: VkViewport;
 	viewport.x = opts.x;
