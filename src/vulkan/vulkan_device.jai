@@ -88,10 +88,15 @@ Sampler :: struct {
 	platformHandle: VkSampler = VK_NULL_HANDLE;
 }
 
+DeviceAddress :: struct {
+	platformHandle: VkDeviceAddress;
+}
+
 Buffer :: struct {
 	buffer: VkBuffer = VK_NULL_HANDLE;
 	allocation: VmaAllocation;
 	info: VmaAllocationInfo;
+	deviceAddress: DeviceAddress;
 }
 
 // rhi api
@@ -485,6 +490,13 @@ rhi_device_create_buffer :: (dev: *Device, opts: BufferDesc) -> Buffer {
 	newBuffer: Buffer;
 	result := vmaCreateBuffer(dev.gpuAllocator, *info, *allocInfo, *newBuffer.buffer, *newBuffer.allocation, *newBuffer.info);
 	assert(result == .SUCCESS, "Failed to allocate buffer");
+
+	if opts.usage & .SHADER_DEVICE_ADDRESS {
+		deviceAddressInfo: VkBufferDeviceAddressInfo;
+		deviceAddressInfo.buffer = newBuffer.buffer;
+		newBuffer.deviceAddress.platformHandle = vkGetBufferDeviceAddress(dev.vkDevice, *deviceAddressInfo);
+	}
+
 	return newBuffer;
 }
 
@@ -942,7 +954,7 @@ init_commands :: (using dev: *Device) {
 
 alloc_imgui :: (sz: u64, user_data: *void) -> *void #c_call
 {
-	new_context: Context;
+	new_context: #Context;
 	push_context new_context
 	{
 		return alloc(xx sz);
@@ -951,7 +963,7 @@ alloc_imgui :: (sz: u64, user_data: *void) -> *void #c_call
 
 free_imgui :: (ptr: *void, user_data: *void) #c_call
 {
-	new_context: Context;
+	new_context: #Context;
 	push_context new_context
 	{
 		free(ptr);
@@ -1068,7 +1080,7 @@ get_required_extensions :: (state: *Device) -> [..] *u8, bool {
 
 vulkan_debug_callback :: ( messageSeverity: VkDebugUtilsMessageSeverityFlagBitsEXT, messageType: VkDebugUtilsMessageTypeFlagsEXT, 
 pCallbackData: *VkDebugUtilsMessengerCallbackDataEXT, pUserData: *void) -> VkBool32 #c_call {
-	new_context: Context;
+	new_context: #Context;
 	push_context new_context 
 	{
 		new_context.logger = logger;

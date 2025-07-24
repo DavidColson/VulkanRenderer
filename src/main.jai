@@ -54,12 +54,11 @@ Vertex :: struct {
 GpuMeshBuffers :: struct {
 	indexBuffer: Buffer;
 	vertexBuffer: Buffer;
-	deviceAddress: VkDeviceAddress;
 }
 
 GpuDrawPushConstants :: struct {
 	worldMatrix: Matrix4;
-	vertexBuffer: VkDeviceAddress;
+	vertexBuffer: DeviceAddress;
 }
 
 main :: () {
@@ -300,18 +299,14 @@ upload_mesh :: (dev: *Device, indices: []u32, vertices: []Vertex) -> GpuMeshBuff
 		memory = .GPU_ONLY
 	});
 
-	deviceAddressInfo: VkBufferDeviceAddressInfo;
-	deviceAddressInfo.buffer = mesh.vertexBuffer.buffer;
-	mesh.deviceAddress = vkGetBufferDeviceAddress(dev.vkDevice, *deviceAddressInfo);
-
 	mesh.indexBuffer = rhi_device_create_buffer(dev, .{
 		size = xx indexBufferSize,
 		usage = .INDEX_BUFFER | .COPY_DST,
 		memory = .GPU_ONLY
 	});
 
-	// here'dev where the actual data upload happens
-	// it'dev doing a full immediate submit, should research how to do this better
+	// here's where the actual data upload happens
+	// it's doing a full immediate submit, should research how to do this better
 	staging := rhi_device_create_buffer(dev, .{
 		size = xx (vertexBufferSize + indexBufferSize),
 		usage = .COPY_SRC,
@@ -451,7 +446,7 @@ draw_geometry :: (cmd: *CommandBuffer, dev: *Device) {
 	// beware, jai matrixes are row-major (designed for hlsl)
 	pushConstants: GpuDrawPushConstants;
 	pushConstants.worldMatrix = transpose(projection * view * model);
-	pushConstants.vertexBuffer = dev.cubeMesh.deviceAddress;
+	pushConstants.vertexBuffer = dev.cubeMesh.vertexBuffer.deviceAddress;
 	set_push_constants(cmd, .VERTEX, 0, size_of(GpuDrawPushConstants), *pushConstants);
 	set_index_buffer(cmd, dev.cubeMesh.indexBuffer, 32);
 
