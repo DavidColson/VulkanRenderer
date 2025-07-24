@@ -79,7 +79,7 @@ main :: () {
 	}
 
 	device: Device;
-	rhi_device_init(*device, window, WIDTH, HEIGHT);
+	init_render_hardware(*device, window, WIDTH, HEIGHT);
 	init_compute_pipeline(*device);
 	init_mesh_pipeline(*device);
 	init_cube_mesh(*device);
@@ -103,19 +103,19 @@ main :: () {
 		}
 		draw(*device);
 		reset_temporary_storage();
-		// rhi_device_reset_temporary_memory(*device);
+		// reset_temporary_memory(*device);
 	}
 }
 
 init_compute_pipeline :: (using dev: *Device) {
-	computeBindGroupLayout = rhi_device_create_bind_group_layout(dev, .{
+	computeBindGroupLayout = create_bind_group_layout(dev, .{
 		debugName = "Compute Layout",
 		bindings = .[
 			.{0, .STORAGE_IMAGE, .COMPUTE }
 		]
 	});
 
-	computeBindGroup = rhi_device_create_bind_group(dev, .{
+	computeBindGroup = create_bind_group(dev, .{
 		debugName = "Compute Bind Group",
 		layout = computeBindGroupLayout,
 		resources = .[
@@ -123,7 +123,7 @@ init_compute_pipeline :: (using dev: *Device) {
 		]
 	});
 
-	computePipeline = rhi_device_create_compute_pipeline(dev, .{
+	computePipeline = create_compute_pipeline(dev, .{
 		debugName = "Compute Pipeline",
 		layouts = .[
 			computeBindGroupLayout
@@ -131,7 +131,7 @@ init_compute_pipeline :: (using dev: *Device) {
 		pushConstants = .[
 			.{ .COMPUTE, size_of(ComputePushConstants), 0 }
 		],
-		shader = rhi_device_create_shader(dev, #run SHADER_GET("gradient.comp"), "gradient.comp"),
+		shader = create_shader(dev, #run SHADER_GET("gradient.comp"), "gradient.comp"),
 	});
 }
 
@@ -142,7 +142,7 @@ init_mesh_pipeline :: (using dev: *Device) {
 		comp: s32;
 		imageData: *u8 = stbi_load("crate.png", *x, *y, *comp, 4);
 
-		crateTexture = rhi_device_create_texture(dev, .{
+		crateTexture = create_texture(dev, .{
 			debugName = "crate.png",
 			format = .RGBA8,
 			size = .{ width = x, height = y, depth=1},
@@ -151,13 +151,13 @@ init_mesh_pipeline :: (using dev: *Device) {
 		});
 	}
 
-	linearSampler = rhi_device_create_sampler(dev, .{
+	linearSampler = create_sampler(dev, .{
 		debugName = "Linear Sampler",
 		magFilter = .LINEAR,
 		minFilter = .LINEAR,
 	});
 
-	cubeMaterialBindGroupLayout = rhi_device_create_bind_group_layout(dev, .{
+	cubeMaterialBindGroupLayout = create_bind_group_layout(dev, .{
 		debugName = "Cube Material Layout",
 		bindings = .[
 			.{ 0, .SAMPLED_IMAGE, .PIXEL },
@@ -165,7 +165,7 @@ init_mesh_pipeline :: (using dev: *Device) {
 		]
 	});
 
-	cubeMaterialBindGroup = rhi_device_create_bind_group(dev, .{
+	cubeMaterialBindGroup = create_bind_group(dev, .{
 		debugName = "Cube Material",
 		layout = cubeMaterialBindGroupLayout,
 		resources = .[
@@ -174,7 +174,7 @@ init_mesh_pipeline :: (using dev: *Device) {
 		]
 	});
 
-	meshPipeline = rhi_device_create_pipeline(dev, .{
+	meshPipeline = create_pipeline(dev, .{
 		debugName = "Mesh Pipeline",
 		layouts = .[
 			cubeMaterialBindGroupLayout
@@ -182,8 +182,8 @@ init_mesh_pipeline :: (using dev: *Device) {
 		pushConstants = .[
 			.{ .VERTEX, size_of(GpuDrawPushConstants), 0 }
 		],
-		vertexShader = rhi_device_create_shader(dev, #run SHADER_GET("colored_triangle_mesh.vert"), "colored_triangle_mesh.vert"),
-		fragmentShader = rhi_device_create_shader(dev, #run SHADER_GET("colored_triangle.frag"), "colored_triangle.frag"),
+		vertexShader = create_shader(dev, #run SHADER_GET("colored_triangle_mesh.vert"), "colored_triangle_mesh.vert"),
+		fragmentShader = create_shader(dev, #run SHADER_GET("colored_triangle.frag"), "colored_triangle.frag"),
 		topology = .TRIANGLE_LIST,
 		rasterizer = .{
 			polygonMode = .FILL,
@@ -278,14 +278,14 @@ upload_mesh :: (dev: *Device, indices: []u32, vertices: []Vertex, debugName: str
 
 	mesh: GpuMeshBuffers;
 
-	mesh.vertexBuffer = rhi_device_create_buffer(dev, .{
+	mesh.vertexBuffer = create_buffer(dev, .{
 		debugName = tprint("% - Vertex Buffer", debugName),
 		size = xx vertexBufferSize,
 		usage = .READ_AND_WRITE | .COPY_DST | .SHADER_DEVICE_ADDRESS,
 		memory = .GPU_ONLY
 	});
 
-	mesh.indexBuffer = rhi_device_create_buffer(dev, .{
+	mesh.indexBuffer = create_buffer(dev, .{
 		debugName = tprint("% - Index Buffer", debugName),
 		size = xx indexBufferSize,
 		usage = .INDEX_BUFFER | .COPY_DST,
@@ -294,7 +294,7 @@ upload_mesh :: (dev: *Device, indices: []u32, vertices: []Vertex, debugName: str
 
 	// here's where the actual data upload happens
 	// it's doing a full immediate submit, should research how to do this better
-	staging := rhi_device_create_buffer(dev, .{
+	staging := create_buffer(dev, .{
 		size = xx (vertexBufferSize + indexBufferSize),
 		usage = .COPY_SRC,
 		memory = .CPU_ONLY
@@ -305,7 +305,7 @@ upload_mesh :: (dev: *Device, indices: []u32, vertices: []Vertex, debugName: str
 	memcpy(data, vertices.data, vertexBufferSize);
 	memcpy(cast(*u8)data + vertexBufferSize, indices.data, indexBufferSize);
 
-	cmd := rhi_device_acquire_command_buffer(dev);
+	cmd := acquire_command_buffer(dev);
 
 	copy_buffer_to_buffer(cmd, .{
 		src=staging,
@@ -321,7 +321,7 @@ upload_mesh :: (dev: *Device, indices: []u32, vertices: []Vertex, debugName: str
 	});
 
 	submit(cmd);
-	rhi_device_destroy_buffer(dev, *staging);
+	destroy_buffer(dev, *staging);
 	return mesh;
 }
 
@@ -343,7 +343,7 @@ draw :: (dev: *Device) {
 
 	// ImGui.Render();
 
-	cmd := rhi_device_acquire_command_buffer(dev);
+	cmd := acquire_command_buffer(dev);
 
 	swapchainTexture := wait_and_acquire_swapchain_texture(cmd);
 

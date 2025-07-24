@@ -101,7 +101,7 @@ Buffer :: struct {
 // rhi api
 
 // core graphics initialization
-rhi_device_init :: (dev: *Device, window: *SDL_Window, width: s32, height: s32) {
+init_render_hardware :: (dev: *Device, window: *SDL_Window, width: s32, height: s32) {
 	dev.window = window;
 	dev.width = width;
 	dev.height = height;
@@ -119,7 +119,7 @@ rhi_device_init :: (dev: *Device, window: *SDL_Window, width: s32, height: s32) 
 	dev.pc.data2 = Vector4.{0, 0, 1, 1};
 }
 
-rhi_device_acquire_command_buffer :: (using dev: *Device) -> *CommandBuffer {
+acquire_command_buffer :: (using dev: *Device) -> *CommandBuffer {
 	for * commandBuffers {
 		if !it.inUse {
 			it.inUse = true;
@@ -139,7 +139,7 @@ rhi_device_acquire_command_buffer :: (using dev: *Device) -> *CommandBuffer {
 	return null;
 }
 
-rhi_device_create_bind_group_layout :: (using dev: *Device, opts: BindGroupLayoutDesc) -> BindGroupLayout {
+create_bind_group_layout :: (using dev: *Device, opts: BindGroupLayoutDesc) -> BindGroupLayout {
 	info: VkDescriptorSetLayoutCreateInfo;
 	info.pNext = null;
 	info.flags = 0;
@@ -169,7 +169,7 @@ rhi_device_create_bind_group_layout :: (using dev: *Device, opts: BindGroupLayou
 	return layout;
 }
 
-rhi_device_create_bind_group :: (using dev: *Device, opts: BindGroupDesc) -> BindGroup {
+create_bind_group :: (using dev: *Device, opts: BindGroupDesc) -> BindGroup {
 	pool := *dev.globalDescriptorPool;
 	if opts.temp {
 		pool = *dev.perFrameDescriptorPool;
@@ -290,7 +290,7 @@ rhi_device_create_bind_group :: (using dev: *Device, opts: BindGroupDesc) -> Bin
 	return bindGroup;
 }
 
-rhi_device_create_pipeline :: (using dev: *Device, opts: PipelineDesc) -> Pipeline {
+create_pipeline :: (using dev: *Device, opts: PipelineDesc) -> Pipeline {
 	pipelineInfo: VkGraphicsPipelineCreateInfo;
 
 	pushConstants: [ShaderStage.NUM_STAGES]VkPushConstantRange;
@@ -409,7 +409,7 @@ rhi_device_create_pipeline :: (using dev: *Device, opts: PipelineDesc) -> Pipeli
 	return pipeline;
 }
 
-rhi_device_create_compute_pipeline :: (using dev: *Device, opts: ComputePipelineDesc) -> Pipeline {
+create_compute_pipeline :: (using dev: *Device, opts: ComputePipelineDesc) -> Pipeline {
 	computePipelineCreateInfo: VkComputePipelineCreateInfo;
 	
 	pushConstants: [ShaderStage.NUM_STAGES]VkPushConstantRange;
@@ -454,7 +454,7 @@ rhi_device_create_compute_pipeline :: (using dev: *Device, opts: ComputePipeline
 	return pipeline;
 }
 
-rhi_device_create_texture :: (using dev: *Device, opts: TextureDesc) -> Texture {
+create_texture :: (using dev: *Device, opts: TextureDesc) -> Texture {
 	image: Texture;
 	image.size = opts.size;
 	image.format = opts.format; 
@@ -495,14 +495,14 @@ rhi_device_create_texture :: (using dev: *Device, opts: TextureDesc) -> Texture 
 	// directly upload data if given
 	if opts.data {
 		dataSize := opts.size.depth * opts.size.width * opts.size.height * 4;
-		uploadBuffer := rhi_device_create_buffer(dev, .{
+		uploadBuffer := create_buffer(dev, .{
 			size = xx dataSize,
 			usage = .COPY_SRC,
 			memory = .CPU_TO_GPU
 		});
 		memcpy(uploadBuffer.info.pMappedData, opts.data, dataSize);
 
-		cmd := rhi_device_acquire_command_buffer(dev);
+		cmd := acquire_command_buffer(dev);
 
 		barrier(cmd, .[.{image, .NONE, .COPY_DST}]);
 
@@ -521,12 +521,12 @@ rhi_device_create_texture :: (using dev: *Device, opts: TextureDesc) -> Texture 
 		barrier(cmd, .[.{image, .COPY_DST, .READ_SHADER}]);
 
 		submit(cmd);
-		rhi_device_destroy_buffer(dev, *uploadBuffer);
+		destroy_buffer(dev, *uploadBuffer);
 	}
 	return image;
 }
 
-rhi_device_create_sampler :: (dev: *Device, opts: SamplerDesc) -> Sampler {
+create_sampler :: (dev: *Device, opts: SamplerDesc) -> Sampler {
 	samplerInfo: VkSamplerCreateInfo;
 	samplerInfo.magFilter = opts.magFilter;
 	samplerInfo.minFilter = opts.minFilter;
@@ -540,7 +540,7 @@ rhi_device_create_sampler :: (dev: *Device, opts: SamplerDesc) -> Sampler {
 	return sampler;
 }
 
-rhi_device_create_shader :: (dev: *Device, bytes: []u8, debugName: string = "") -> Shader {
+create_shader :: (dev: *Device, bytes: []u8, debugName: string = "") -> Shader {
 	createInfo: VkShaderModuleCreateInfo;
 	createInfo.codeSize = xx bytes.count;
 	createInfo.pCode = cast(*u32) bytes.data;
@@ -554,7 +554,7 @@ rhi_device_create_shader :: (dev: *Device, bytes: []u8, debugName: string = "") 
 	return .{platformHandle = shaderModule};
 }
 
-rhi_device_create_buffer :: (dev: *Device, opts: BufferDesc) -> Buffer {
+create_buffer :: (dev: *Device, opts: BufferDesc) -> Buffer {
 	info: VkBufferCreateInfo;
 	info.size = xx opts.size;
 	info.usage = buffer_usage_mask_to_vk(opts.usage);
@@ -579,17 +579,17 @@ rhi_device_create_buffer :: (dev: *Device, opts: BufferDesc) -> Buffer {
 	return newBuffer;
 }
 
-rhi_device_destroy_buffer :: (dev: *Device, buffer: *Buffer) {
+destroy_buffer :: (dev: *Device, buffer: *Buffer) {
 	vmaDestroyBuffer(dev.gpuAllocator, buffer.buffer, buffer.allocation);
 }
 
-rhi_device_destroy_bind_group :: (using dev: *Device, bindGroup: BindGroup) {
+destroy_bind_group :: (using dev: *Device, bindGroup: BindGroup) {
 	if bindGroup.canBeFreed {
 		vkFreeDescriptorSets(dev.vkDevice, bindGroup.allocatedFrom, 1, *bindGroup.platformHandle);
 	}
 }
 
-rhi_device_reset_temporary_memory :: (using dev: *Device) {
+reset_temporary_memory :: (using dev: *Device) {
 	for 0..dev.perFrameDescriptorPool.pools.count-1 {
 		vkResetDescriptorPool(dev.vkDevice, perFrameDescriptorPool.pools[it], 0); 
 	}
@@ -988,14 +988,14 @@ init_swapchain :: (using dev: *Device) {
 	}
 
 	// @todo: these need to moved to higher level rendering, they are not the swapchain images, just render targets
-	drawImage = rhi_device_create_texture(dev, .{
+	drawImage = create_texture(dev, .{
 		debugName = "Primary Color Target",
 		format = .RGBA16F,
 		size = .{width = WIDTH, height = HEIGHT, depth=1},
 		usage = .COPY_ALL | .READ_WRITE_SHADER | .WRITE_RENDER_TARGET,
 	});
 
-	depthImage = rhi_device_create_texture(dev, .{
+	depthImage = create_texture(dev, .{
 		debugName = "Primary Depth Target",
 		format = .DEPTH,
 		size = drawImage.size,
