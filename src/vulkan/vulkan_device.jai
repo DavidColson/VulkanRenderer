@@ -98,6 +98,12 @@ Buffer :: struct {
 	deviceAddress: DeviceAddress;
 }
 
+BindlessPool :: struct {
+	descriptorPool: VkDescriptorPool;
+	layout: VkDescriptorSetLayout = VK_NULL_HANDLE;
+	descriptorSet: VkDescriptorSet = VK_NULL_HANDLE;
+}
+
 // rhi api
 
 // core graphics initialization
@@ -176,6 +182,8 @@ create_bind_group :: (using dev: *Device, opts: BindGroupDesc) -> BindGroup {
 	}
 
 	create_new_pool :: (using dev: *Device, index: s64, debugName: string) -> VkDescriptorPool {
+		// @todo: same pool ratios for all pools, probably wasted memory here
+		// See if we can do better
 		poolSizes: []VkDescriptorPoolSize = .[
 			.{type = .SAMPLER, descriptorCount = 20 },
 			.{type = .SAMPLED_IMAGE, descriptorCount = 100 },
@@ -184,6 +192,8 @@ create_bind_group :: (using dev: *Device, opts: BindGroupDesc) -> BindGroup {
 			.{type = .STORAGE_BUFFER, descriptorCount = 100 },
 		];
 
+		// @todo: need to mark per frame descriptor pool as not supporting individual
+		// delete so that they do a linear allocation in the driver
 		poolInfo: VkDescriptorPoolCreateInfo;
 		poolInfo.flags = .FREE_DESCRIPTOR_SET_BIT;
 		poolInfo.maxSets = 20;
@@ -290,6 +300,87 @@ create_bind_group :: (using dev: *Device, opts: BindGroupDesc) -> BindGroup {
 	return bindGroup;
 }
 
+create_bindless_pool :: (using dev: *Device, opts: BindlessPoolDesc) -> BindlessPool {
+
+	// Make the descriptor pool
+	poolSizes : [..]VkDescriptorPoolSize;
+	poolSizes.allocator = temp;
+	for 0..opts.resourceTypes.count-1 {
+		poolSize:VkDescriptorPoolSize;
+		poolSize.type = binding_type_to_vk(opts.resourceTypes[it].type);
+		poolSize.descriptorCount = xx opts.resourceTypes[it].count;
+	}
+
+	poolInfo: VkDescriptorPoolCreateInfo;
+	poolInfo.flags = .UPDATE_AFTER_BIND_BIT;
+	poolInfo.maxSets = 1;
+	poolInfo.poolSizeCount = xx poolSizes.count;
+	poolInfo.pPoolSizes = poolSizes.data;
+
+	bindlessPool: BindlessPool;
+	result := vkCreateDescriptorPool(dev.vkDevice, *poolInfo, null, *bindlessPool.descriptorPool);
+
+	if opts.debugName.count {
+		vk_set_debug_name(dev, xx bindlessPool.descriptorPool, .VK_OBJECT_TYPE_DESCRIPTOR_POOL, tprint("% - Bindless DescriptorPool", opts.debugName));
+	}
+	
+	// Make the layout
+	info: VkDescriptorSetLayoutCreateInfo;
+	info.pNext = null;
+	info.flags = .UPDATE_AFTER_BIND_POOL_BIT;
+
+	descriptorCounts: [..]u32;
+	descriptorCounts.allocator = temp;
+	bindings : [..]VkDescriptorSetLayoutBinding;
+	bindings.allocator = temp;
+	for 0..opts.resourceTypes.count-1 {
+		newBind: VkDescriptorSetLayoutBinding;
+		newBind.binding = xx it;
+		newBind.descriptorCount = xx opts.resourceTypes[it].count;
+		newBind.descriptorType = binding_type_to_vk(opts.resourceTypes[it].type);
+		newBind.stageFlags = .ALL;
+		array_add(*bindings, newBind);
+		array_add(*descriptorCounts, cast(u32, opts.resourceTypes[it].count-1));
+	}
+	info.pBindings = bindings.data;
+	info.bindingCount = xx bindings.count;
+
+	bindingFlags: VkDescriptorBindingFlags = .PARTIALLY_BOUND_BIT_EXT | .VARIABLE_DESCRIPTOR_COUNT_BIT_EXT | .UPDATE_AFTER_BIND_BIT_EXT;
+	extendedInfo: VkDescriptorSetLayoutBindingFlagsCreateInfoEXT;
+	extendedInfo.bindingCount = 1;
+	extendedInfo.pBindingFlags = *bindingFlags;
+	info.pNext = *extendedInfo;
+
+	result = vkCreateDescriptorSetLayout(dev.vkDevice, *info, null, *bindlessPool.layout);
+	assert(result == .SUCCESS, "Could not create descriptor set layout");
+	if opts.debugName.count {
+		vk_set_debug_name(dev, xx bindlessPool.layout, .VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, tprint("% - Bindless DescriptorLayout", opts.debugName));
+	}
+	
+	// Make the descriptor set
+
+	allocInfo: VkDescriptorSetAllocateInfo;
+	allocInfo.descriptorPool = bindlessPool.descriptorPool;
+	allocInfo.descriptorSetCount = 1;
+	allocInfo.pSetLayouts = *bindlessPool.layout;
+
+	countInfo: VkDescriptorSetVariableDescriptorCountAllocateInfoEXT;
+	countInfo.descriptorSetCount = xx descriptorCounts.count;
+	countInfo.pDescriptorCounts = descriptorCounts.data;
+	allocInfo.pNext = *countInfo;
+
+	result = vkAllocateDescriptorSets(dev.vkDevice, *allocInfo, *bindlessPool.descriptorSet);
+	if opts.debugName.count {
+		vk_set_debug_name(dev, xx bindlessPool.descriptorSet, .VK_OBJECT_TYPE_DESCRIPTOR_SET, tprint("% - Bindless DescriptorSet", opts.debugName));
+	}
+	return bindlessPool;
+}
+
+update_bindless_pool :: (using dev: *Device, pool:BindlessPool, opts: BindlessPoolDesc) {
+
+	
+}
+
 create_pipeline :: (using dev: *Device, opts: PipelineDesc) -> Pipeline {
 	pipelineInfo: VkGraphicsPipelineCreateInfo;
 
@@ -300,6 +391,9 @@ create_pipeline :: (using dev: *Device, opts: PipelineDesc) -> Pipeline {
 		pushConstants[it].stageFlags = shader_stage_to_vk(opts.pushConstants[it].stage);
 	}
 
+	// We are hardcoded to three bind group slots
+	// For difference frequencies (global, material, shader specific)
+	assert(opts.layouts.count < 3);
 	setLayouts: [3]VkDescriptorSetLayout;
 	for 0..opts.layouts.count-1 {
 		setLayouts[it] = opts.layouts[it].platformHandle;
@@ -847,35 +941,45 @@ init_vulkan :: (dev: *Device) -> bool {
 		queue_infos[it_index].pQueuePriorities = *queue_priority;
 	}
 
+	// We do this to just enable all possible indexing features
+	descriptorIndexing:  VkPhysicalDeviceDescriptorIndexingFeatures;
+	{
+		features: VkPhysicalDeviceFeatures2;
+		features.pNext = *descriptorIndexing;
+		vkGetPhysicalDeviceFeatures2(dev.physicalDevice, *features);
+	}
+
 	device_features: VkPhysicalDeviceFeatures;
 
-	dynamic_rendering := VkPhysicalDeviceDynamicRenderingFeatures.{dynamicRendering = VK_TRUE};
+	dynamicRendering := VkPhysicalDeviceDynamicRenderingFeatures.{
+		dynamicRendering = VK_TRUE,
+		pNext = *descriptorIndexing
+	};
 	sync2 := VkPhysicalDeviceSynchronization2Features.{
 		synchronization2 = VK_TRUE, 
-		pNext = *dynamic_rendering
+		pNext = *dynamicRendering
 	};
-	buffer_device_address := VkPhysicalDeviceBufferDeviceAddressFeatures.{
+	bufferDeviceAddress := VkPhysicalDeviceBufferDeviceAddressFeatures.{
 		bufferDeviceAddress = VK_TRUE,
 		pNext = *sync2,
 	};
-
 	extensions :: (*u8).[VK_KHR_SWAPCHAIN_EXTENSION_NAME];
 
-	device_create_info: VkDeviceCreateInfo;
-	device_create_info.pQueueCreateInfos = queue_infos.data;
-	device_create_info.queueCreateInfoCount = xx queue_infos.count;
-	device_create_info.pEnabledFeatures = *device_features;
-	device_create_info.pNext = *buffer_device_address;
-	device_create_info.enabledExtensionCount = extensions.count;
-	device_create_info.ppEnabledExtensionNames = extensions.data;
+	deviceCreateInfo: VkDeviceCreateInfo;
+	deviceCreateInfo.pQueueCreateInfos = queue_infos.data;
+	deviceCreateInfo.queueCreateInfoCount = xx queue_infos.count;
+	deviceCreateInfo.pEnabledFeatures = *device_features;
+	deviceCreateInfo.pNext = *bufferDeviceAddress;
+	deviceCreateInfo.enabledExtensionCount = extensions.count;
+	deviceCreateInfo.ppEnabledExtensionNames = extensions.data;
 
 	#if VALIDATION_ENABLED 
 	{
-		device_create_info.enabledLayerCount = REQUIRED_VALIDATION_LAYERS.count;
-		device_create_info.ppEnabledLayerNames = REQUIRED_VALIDATION_LAYERS.data;
+		deviceCreateInfo.enabledLayerCount = REQUIRED_VALIDATION_LAYERS.count;
+		deviceCreateInfo.ppEnabledLayerNames = REQUIRED_VALIDATION_LAYERS.data;
 	}
 
-	result = vkCreateDevice(dev.physicalDevice, *device_create_info, null, *dev.vkDevice);
+	result = vkCreateDevice(dev.physicalDevice, *deviceCreateInfo, null, *dev.vkDevice);
 	assert(result == .SUCCESS, "Failed to create logical device!");
 	vk_set_debug_name(dev, xx dev.vkDevice, .VK_OBJECT_TYPE_DEVICE, "Primary Device");
 	vk_set_debug_name(dev, xx dev.instance, .VK_OBJECT_TYPE_INSTANCE, "Primary Instance");

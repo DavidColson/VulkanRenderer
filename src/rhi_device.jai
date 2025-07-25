@@ -147,6 +147,30 @@ PushConstantDesc :: struct {
 	offset: s32;
 }
 
+// Bindless stuff
+
+BindlessResourceSlot :: struct {
+	type: BindingType;
+	count: s32;
+}
+
+BindlessPoolDesc :: struct {
+	debugName: string;
+	resourceTypes: []BindlessResourceSlot;
+}
+
+BindlessResource :: struct {
+	slot: s32;
+	index: s32;
+	texture: Texture;
+	buffer: Buffer;
+}
+
+BindlessPoolUpdateDesc :: struct {
+	pool: BindlessPool;
+	resources: []BindlessResource;
+}
+
 SamplerDesc :: struct {
 	debugName: string;
 	// @todo: options!!

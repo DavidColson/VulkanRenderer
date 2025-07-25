@@ -136,6 +136,95 @@ init_compute_pipeline :: (using dev: *Device) {
 }
 
 init_mesh_pipeline :: (using dev: *Device) {
+
+	// how to do bindless in our API?
+	// Without necessarily losing the non-bindless version we have already
+	// Which is nice to keep around for small projects
+	//
+	// Essentially what we're going to be doing is having one bind group layout
+	// Which is an array of textures or buffers
+	// And then one bind group with all the data we care about in an array
+	// And we need to provide a way to update any data in that array at any time
+	// So really it should exist as a subset of the bind group API we've created?
+	//
+	// Worth noting we do not currently have a method for modifying bind groups
+	// This is somewhat by design, it's a feature of Seb Aaltonen's design
+	// So we need a way around that
+	//
+	//
+	// Consider what an API would even be to update a bind group
+	// You essentially want to give the resources table again, and run the same code to go through
+	// each binding for that descriptor set and call update
+	// Note that you don't necessarily need to give all the slots when you do the update
+	// As we'll make a descriptor write for each one indidually
+	// 
+	//
+	// But not every bind group should be able to do that?
+	// You need to give a flag or something to say it's ready for that mode
+	// In vulkan you need to mark the descriptor set as partially bound and update after bind
+	//
+	// So we provide a flag when we make the bind group to say it's dynamic
+	// We make a function to update a bind group, which asserts if it's not dynamic
+	//
+	// We also need to expose to the bind group data the idea that a slot is actually an array
+	// That will be a count integer in the layout binding data
+	// Plus the resourceBind structure should take an array of each type
+	// We need a way to update specific elements in the descriptor set array, but all in one update call
+	// to minimize the waste
+	//
+	// Really you want one update_bind_group call which takes all the resources to update
+	// And their indices
+	// resources = .[
+	//   .{slot = 0, textureArray = .[.{0, texture}, .{3, texture}]}
+	//   .{slot = 1, bufferArray = .[.{2, buffer}, .{7, buffer}]}
+	// ]
+	// Either something like this where you explicitly specify which items you want to update
+	// Or you give the whole array, and it matches the layout, such that there are holes
+	// Internally we will just skip binding array items that do not have anything in them
+	// One thing we could do is this:
+	// update_bind_group(.[
+	//    .{slot=0, index=5, texture=texture},
+	//    .{slot=1, index=0, buffer=buffer},
+	//    .{slot=0, index=2, texture=texture},
+	// ])
+	// Yea that's relatively simple data layout wise, and it's very flexible
+	// The index could be optional and you could just update whatever you wanted
+	// You would do your management of the bindless array in userspace
+	// And then just call this once per frame to update them all in one go
+	//
+
+	// create_bind_group(.{
+	//     layout=...
+	//     flags=.UPDATE_AFTER_CREATE
+	// })o
+	//
+	// Quantify what flags the bind group needs to be bindless ready
+	// Then figure out a name for it
+	// We need a special pool with update_after_bind set
+	// The layout needs partially bound and update_after_bound !!!!!! <- Needs a special layout
+	// The descriptor set itself needs no flags
+	// The fact that we need a special layout lends credence to the idea that this should be separate from
+	// Bind groups and something entirely different
+	//
+	// What if we just pulled the whole bindless set into the API, and you just
+	// call "store_resource" and it gives you an ID? And we bind the descriptor set ourselves
+	// I don't love this because I prefer to keep more stuff in userland control
+	//
+	// What if we had create_bindless_pool([{slot,resourceType}, {slot, resourceType}], count);
+	// Which creates the pool for this array, and the layout, and the base descriptor set to update
+	//
+	// Then we have update_bindless_pool([{slot,index,resource}, etc]) which you can call every frame to update stuff
+	//
+	// Okay now I have a plan I am happy with
+
+	// create global bindless pool
+	create_bindless_pool(dev, .{
+		debugName="bindless texture pool",
+		resourceTypes = .[
+			.{ .SAMPLED_IMAGE, 16 }
+		]
+	});
+
 	// load the texture for the cube
 	{
 		x, y: s32;
