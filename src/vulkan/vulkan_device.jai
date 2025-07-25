@@ -46,6 +46,7 @@ Device :: struct {
 	linearSampler: Sampler;
 	cubeMaterialBindGroupLayout: BindGroupLayout;
 	cubeMaterialBindGroup: BindGroup;
+	globalBindlessPool: BindlessPool;
 	computeBindGroupLayout: BindGroupLayout;
 	computeBindGroup: BindGroup;
 	computePipeline: Pipeline;
@@ -102,6 +103,7 @@ BindlessPool :: struct {
 	descriptorPool: VkDescriptorPool;
 	layout: VkDescriptorSetLayout = VK_NULL_HANDLE;
 	descriptorSet: VkDescriptorSet = VK_NULL_HANDLE;
+	slotTypes: []BindlessResourceSlot;
 }
 
 // rhi api
@@ -373,12 +375,58 @@ create_bindless_pool :: (using dev: *Device, opts: BindlessPoolDesc) -> Bindless
 	if opts.debugName.count {
 		vk_set_debug_name(dev, xx bindlessPool.descriptorSet, .VK_OBJECT_TYPE_DESCRIPTOR_SET, tprint("% - Bindless DescriptorSet", opts.debugName));
 	}
+	bindlessPool.slotTypes = opts.resourceTypes;
 	return bindlessPool;
 }
 
-update_bindless_pool :: (using dev: *Device, pool:BindlessPool, opts: BindlessPoolDesc) {
+update_bindless_pool :: (using dev: *Device, opts: BindlessPoolUpdateDesc) {
+	assert(opts.pool.descriptorPool != VK_NULL_HANDLE);
 
+	// iterate through the resources listed in the bindless pool desc
+	writeDescriptorSets: [..]VkWriteDescriptorSet;
+	writeDescriptorSets.allocator = temp;
+	imageInfos: [..]VkDescriptorImageInfo;
+	imageInfos.allocator = temp;
+
+	for 0..opts.resources.count-1 {
+		resource := opts.resources[it];
+		type := opts.pool.slotTypes[resource.slot].type;
+
+		// @todo: support buffers here too
+		if type == .SAMPLED_IMAGE {
+			assert(resource.texture.platformHandle != VK_NULL_HANDLE);
+
+			imgInfo := array_add(*imageInfos);
+			imgInfo.imageLayout = .SHADER_READ_ONLY_OPTIMAL;
+			imgInfo.imageView = resource.texture.imageViewHandle;
+
+			descriptorWrite := array_add(*writeDescriptorSets);
+			descriptorWrite.dstSet = opts.pool.descriptorSet;
+			descriptorWrite.dstBinding = xx opts.resources[it].slot;
+			descriptorWrite.descriptorCount = 1;
+			descriptorWrite.descriptorType = .SAMPLED_IMAGE;
+			descriptorWrite.dstArrayElement = xx opts.resources[it].index;
+			descriptorWrite.pImageInfo = imgInfo;
+		}
+		else if type == .STORAGE_IMAGE {
+			assert(resource.texture.platformHandle != VK_NULL_HANDLE);
+
+			imgInfo := array_add(*imageInfos);
+			imgInfo.imageLayout = .GENERAL;
+			imgInfo.imageView = resource.texture.imageViewHandle;
+
+			descriptorWrite := array_add(*writeDescriptorSets);
+			descriptorWrite.dstSet = opts.pool.descriptorSet;
+			descriptorWrite.dstBinding = xx opts.resources[it].slot;
+			descriptorWrite.descriptorCount = 1;
+			descriptorWrite.descriptorType = .STORAGE_IMAGE;
+			descriptorWrite.dstArrayElement = xx opts.resources[it].index;
+			descriptorWrite.pImageInfo = imgInfo;
+		}
+	}
 	
+	// update all descriptors
+	vkUpdateDescriptorSets(dev.vkDevice, xx writeDescriptorSets.count, writeDescriptorSets.data, 0, null);
 }
 
 create_pipeline :: (using dev: *Device, opts: PipelineDesc) -> Pipeline {
@@ -391,19 +439,23 @@ create_pipeline :: (using dev: *Device, opts: PipelineDesc) -> Pipeline {
 		pushConstants[it].stageFlags = shader_stage_to_vk(opts.pushConstants[it].stage);
 	}
 
-	// We are hardcoded to three bind group slots
-	// For difference frequencies (global, material, shader specific)
-	assert(opts.layouts.count < 3);
-	setLayouts: [3]VkDescriptorSetLayout;
+	// Sets are numbers first by their order in the layout list
+	// Then the bindless pool if one is provided, followed by any other special group
+	setLayouts: [..]VkDescriptorSetLayout;
+	setLayouts.allocator = temp;
 	for 0..opts.layouts.count-1 {
-		setLayouts[it] = opts.layouts[it].platformHandle;
+		array_add(*setLayouts, opts.layouts[it].platformHandle);
 	}
+	if opts.bindlessPool.layout != VK_NULL_HANDLE {
+		array_add(*setLayouts, opts.bindlessPool.layout);
+	}
+	assert(setLayouts.count < 4);
 
 	layoutCreateInfo: VkPipelineLayoutCreateInfo;
 	layoutCreateInfo.pPushConstantRanges = pushConstants.data;
 	layoutCreateInfo.pushConstantRangeCount = xx opts.pushConstants.count;
 	layoutCreateInfo.pSetLayouts = setLayouts.data;
-	layoutCreateInfo.setLayoutCount = xx opts.layouts.count;
+	layoutCreateInfo.setLayoutCount = xx setLayouts.count;
 
 	layout: VkPipelineLayout;
 	vkCreatePipelineLayout(dev.vkDevice, *layoutCreateInfo, null, *layout);

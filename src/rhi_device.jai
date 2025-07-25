@@ -89,6 +89,7 @@ MAX_COLOR_TARGETS :: 8;
 PipelineDesc :: struct {
 	debugName: string;
 	layouts: []BindGroupLayout;
+	bindlessPool: BindlessPool;
 	vertexShader: Shader;
 	fragmentShader: Shader;
 	topology: Topology;

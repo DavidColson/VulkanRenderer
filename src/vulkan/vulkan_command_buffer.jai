@@ -211,8 +211,12 @@ set_pipeline :: (cmd: *CommandBuffer, bindPoint: BindPoint, pipeline: Pipeline) 
 	vkCmdBindPipeline(cmd.platformHandle, to_vk(bindPoint), pipeline.platformHandle);
 }
 
-set_bind_group :: (cmd: *CommandBuffer, bindPoint: BindPoint, bindGroup: BindGroup) {
-	vkCmdBindDescriptorSets(cmd.platformHandle, to_vk(bindPoint), cmd.currentPipeline.pipelineLayout, 0, 1, *bindGroup.platformHandle, 0, null);
+set_bind_group :: (cmd: *CommandBuffer, bindPoint: BindPoint, set: u32, bindGroup: BindGroup) {
+	vkCmdBindDescriptorSets(cmd.platformHandle, to_vk(bindPoint), cmd.currentPipeline.pipelineLayout, set, 1, *bindGroup.platformHandle, 0, null);
+}
+
+set_bindless_pool :: (cmd: *CommandBuffer, bindPoint: BindPoint, set: u32, bindlessPool: BindlessPool) {
+	vkCmdBindDescriptorSets(cmd.platformHandle, to_vk(bindPoint), cmd.currentPipeline.pipelineLayout, set, 1, *bindlessPool.descriptorSet, 0, null);
 }
 
 set_index_buffer :: (cmd: *CommandBuffer, buffer: Buffer, elementSizeBytes: s32) {
